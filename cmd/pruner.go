@@ -89,6 +89,14 @@ func PruneAppState(dataDir string) error {
 		logger.Info("Pruning up to", "targetHeight", targetHeight)
 
 		appStore.PruneStores(targetHeight)
+
+		logger.Info("Purging commit info from application.db", "targetHeight", ver-1)
+		prunedS, err := deleteHeightRange(appAdpt, "s/", 0, uint64(targetHeight)-1)
+		if err != nil {
+			logger.Error("failed to deleteHeightRange")
+			return err
+		}
+		logger.Info("purged", "count", prunedS)
 	}
 
 	if gcApplication {
