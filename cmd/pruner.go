@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -206,7 +207,26 @@ func PruneCmtData(dataDir string) error {
 	if err != nil {
 		return err
 	}
+	// PruneBlocks _should_ prune:
+	// - Block headers (keys H:<HEIGHT>)
+	// - Commit information (keys C:<HEIGHT>)
+	// but it does not, so we prune it manually
+	// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
+	// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
+	// for confirmation of this
+	prunedC, err := deleteHeightRange(blockStoreDB, "C", 0, pruneHeight-100)
+	if err != nil {
+		return err
+	}
+	logger.Info("Pruned commits", "count", prunedC)
 
+	prunedH, err := deleteHeightRange(blockStoreDB, "H", 0, pruneHeight-100)
+	if err != nil {
+		return err
+	}
+	logger.Info("Pruned block headers", "count", prunedH)
+
+	logger.Info("Compacting blockstore")
 	if err := blockStoreDB.Compact(nil, nil); err != nil {
 		return err
 	}
@@ -230,4 +250,52 @@ func PruneCmtData(dataDir string) error {
 	}
 
 	return nil
+}
+
+// Deletes all keys in the range <key>:<start> to <key>:<end>
+// where start and end are left-padded with zeroes to the amount of base-10 digits
+// in "end".
+// For example, with key="test", start=0 and end=1000, the keys
+// test:0, test:1, ..., test:9, test:10, ..., test:99, test:100, ..., test:999, test:1000 will be deleted
+func deleteHeightRange(db dbm.DB, key string, startHeight, endHeight int64) (uint64, error) {
+	// keys are blobs of bytes, we can't do integer comparison,
+	// even if a key looks like C:12345
+	// we need to pad the range to match the right amount of digits
+	maxDigits := len(fmt.Sprintf("%d", endHeight))
+	var pruned uint64 = 0
+
+	for digits := 1; digits <= maxDigits; digits++ {
+		rangeStart := int64(math.Max(float64(startHeight), float64(math.Pow10(digits-1))))
+		rangeEnd := int64(math.Min(float64(endHeight), float64(math.Pow10(digits))-1))
+
+		if rangeStart > rangeEnd {
+			continue
+		}
+
+		startKey := []byte(fmt.Sprintf("%s:%0*d", key, digits, rangeStart))
+		endKey := []byte(fmt.Sprintf("%s:%0*d", key, digits, rangeEnd))
+
+		iter, err := db.Iterator(startKey, endKey)
+		if err != nil {
+			return pruned, fmt.Errorf("error creating iterator for digit length %d: %w", digits, err)
+		}
+
+		for ; iter.Valid(); iter.Next() {
+			pruned++
+			if err := db.Delete(iter.Key()); err != nil {
+				iter.Close()
+				return pruned, fmt.Errorf("error deleting key %s: %w", string(iter.Key()), err)
+			}
+
+		}
+
+		if err := iter.Error(); err != nil {
+			iter.Close()
+			return pruned, fmt.Errorf("iterator error for digit length %d: %w", digits, err)
+		}
+
+		iter.Close()
+	}
+
+	return pruned, nil
 }
