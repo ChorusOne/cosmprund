@@ -5,6 +5,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"cosmossdk.io/log"
 	"cosmossdk.io/store/metrics"
@@ -105,7 +107,7 @@ func PruneAppState(dataDir string) error {
 // This function will CLOSE dbToGC.
 // This should be generic over dbs so we can also use dbm.GoLevelDB, but blockstore doesn't really
 // benefit from GC
-func runGC(dataDir string, dbName string, o opt.Options, dbToGC *db.GoLevelDB) error {
+func runGC(dataDir string, dbName string, o opt.Options, dbToGC DBAdapter) error {
 	logger.Info("starting garbage collection pass")
 	gcDB, err := db.NewGoLevelDBWithOpts(fmt.Sprintf("%s_gc", dbName), dataDir, &o)
 	if err != nil {
@@ -214,13 +216,14 @@ func PruneCmtData(dataDir string) error {
 	// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
 	// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
 	// for confirmation of this
-	prunedC, err := deleteHeightRange(blockStoreDB, "C", 0, pruneHeight-100)
+	blockStoreAdpt := NewCometDBAdapter(blockStoreDB)
+	prunedC, err := deleteHeightRange(blockStoreAdpt, "C:", 0, uint64(pruneHeight)-100)
 	if err != nil {
 		return err
 	}
 	logger.Info("Pruned commits", "count", prunedC)
 
-	prunedH, err := deleteHeightRange(blockStoreDB, "H", 0, pruneHeight-100)
+	prunedH, err := deleteHeightRange(blockStoreAdpt, "H:", 0, uint64(pruneHeight)-100)
 	if err != nil {
 		return err
 	}
@@ -255,39 +258,56 @@ func PruneCmtData(dataDir string) error {
 // Deletes all keys in the range <key>:<start> to <key>:<end>
 // where start and end are left-padded with zeroes to the amount of base-10 digits
 // in "end".
-// For example, with key="test", start=0 and end=1000, the keys
+// For example, with key="test:", start=0 and end=1000, the keys
 // test:0, test:1, ..., test:9, test:10, ..., test:99, test:100, ..., test:999, test:1000 will be deleted
-func deleteHeightRange(db dbm.DB, key string, startHeight, endHeight int64) (uint64, error) {
+func deleteHeightRange(db DBAdapter, key string, startHeight, endHeight uint64) (uint64, error) {
 	// keys are blobs of bytes, we can't do integer comparison,
 	// even if a key looks like C:12345
 	// we need to pad the range to match the right amount of digits
 	maxDigits := len(fmt.Sprintf("%d", endHeight))
 	var pruned uint64 = 0
 
-	for digits := 1; digits <= maxDigits; digits++ {
-		rangeStart := int64(math.Max(float64(startHeight), float64(math.Pow10(digits-1))))
-		rangeEnd := int64(math.Min(float64(endHeight), float64(math.Pow10(digits))-1))
+	logger.Info("Pruning key", "key", key)
+	for digits := maxDigits; digits >= 1; digits-- {
+		rangeStart := uint64(math.Max(float64(startHeight), float64(math.Pow10(digits-1))))
+		rangeEnd := uint64(math.Min(float64(endHeight), float64(math.Pow10(digits))-1))
 
 		if rangeStart > rangeEnd {
 			continue
 		}
 
-		startKey := []byte(fmt.Sprintf("%s:%0*d", key, digits, rangeStart))
-		endKey := []byte(fmt.Sprintf("%s:%0*d", key, digits, rangeEnd))
+		startKey := []byte(fmt.Sprintf("%s%0*d", key, digits, rangeStart))
+		endKey := []byte(fmt.Sprintf("%s%0*d", key, digits, rangeEnd))
 
 		iter, err := db.Iterator(startKey, endKey)
 		if err != nil {
 			return pruned, fmt.Errorf("error creating iterator for digit length %d: %w", digits, err)
 		}
+		logger.Info("Pruning range", "Start", string(startKey), "end", string(endKey))
 
 		for ; iter.Valid(); iter.Next() {
+			k := iter.Key()
+			// The keys are of format <key><height>
+			// but <height> is an ascii-encoded integer; so when we query by range
+			// we _will_ get keys which are beyond the expected maximum.
+			// Parse the height from the key, and skip deletion if outside of the range
+			numberPart := k[len(key):]
+			number, err := strconv.ParseUint(string(numberPart), 10, 64)
+			if err != nil {
+				fmt.Printf("got err %s\n", err)
+				continue
+			}
+			if number > endHeight {
+				continue
+			}
 			pruned++
-			if err := db.Delete(iter.Key()); err != nil {
+			if err := db.Delete(k); err != nil {
 				iter.Close()
-				return pruned, fmt.Errorf("error deleting key %s: %w", string(iter.Key()), err)
+				return pruned, fmt.Errorf("error deleting key %s: %w", string(k), err)
 			}
 
 		}
+		logger.Info("Done with range", "pruned so far", pruned)
 
 		if err := iter.Error(); err != nil {
 			iter.Close()
