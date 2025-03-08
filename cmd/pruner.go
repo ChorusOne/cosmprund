@@ -155,20 +155,11 @@ func runGC(dataDir string, dbName string, o opt.Options, dbToGC DBAdapter) error
 	}
 
 	oldPath := filepath.Join(dataDir, fmt.Sprintf("%s.db", dbName))
-	backupPath := filepath.Join(dataDir, fmt.Sprintf("%s_backup.db", dbName))
 	newPath := filepath.Join(dataDir, fmt.Sprintf("%s_gc.db", dbName))
-	os.RemoveAll(backupPath)
-
-	// Swap directories
-	if err := os.Rename(oldPath, backupPath); err != nil {
-		logger.Error("Failed to backup original DB", "err", err)
-		return err
-	}
+	os.RemoveAll(oldPath)
 
 	if err := os.Rename(newPath, oldPath); err != nil {
 		logger.Error("Failed to swap GC DB", "err", err)
-		// Try to restore original
-		os.Rename(backupPath, oldPath)
 		return err
 	}
 
