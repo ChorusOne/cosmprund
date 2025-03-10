@@ -118,10 +118,10 @@ func PruneAppState(dataDir string) error {
 // This should be generic over dbs so we can also use dbm.GoLevelDB, but blockstore doesn't really
 // benefit from GC
 func runGC(dataDir string, dbName string, o opt.Options, dbToGC DBAdapter) error {
-	logger.Info("starting garbage collection pass")
+	logger.Info("starting garbage collection pass", "db", dbName)
 	gcDB, err := db.NewGoLevelDBWithOpts(fmt.Sprintf("%s_gc", dbName), dataDir, &o)
 	if err != nil {
-		logger.Error("Failed to open new application db", "err", err)
+		logger.Error("Failed to open gc db", "err", err)
 		return err
 	}
 
@@ -214,22 +214,21 @@ func PruneCmtData(dataDir string) error {
 	// PruneBlocks _should_ prune:
 	// - Block headers (keys H:<HEIGHT>)
 	// - Commit information (keys C:<HEIGHT>)
+	// - ExtendedCommit information (keys EC:<HEIGHT>)
+	// - SeenCommit (keys SC:<HEIGHT>)
 	// but it does not, so we prune it manually
 	// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
 	// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
 	// for confirmation of this
+	// This code does not prune P: yet, as key format is different
 	blockStoreAdpt := NewCometDBAdapter(blockStoreDB)
-	prunedC, err := deleteHeightRange(blockStoreAdpt, "C:", 0, uint64(pruneHeight)-100)
-	if err != nil {
-		return err
+	for _, key := range []string{"H:", "C:", "EC:", "SC:"} {
+		prunedEC, err := deleteHeightRange(blockStoreAdpt, key, 0, uint64(pruneHeight)-100)
+		if err != nil {
+			return err
+		}
+		logger.Info("Pruned", "key", key, "count", prunedEC)
 	}
-	logger.Info("Pruned commits", "count", prunedC)
-
-	prunedH, err := deleteHeightRange(blockStoreAdpt, "H:", 0, uint64(pruneHeight)-100)
-	if err != nil {
-		return err
-	}
-	logger.Info("Pruned block headers", "count", prunedH)
 
 	logger.Info("Compacting blockstore")
 	if err := blockStoreDB.Compact(nil, nil); err != nil {
@@ -276,7 +275,8 @@ func deleteHeightRange(db DBAdapter, key string, startHeight, endHeight uint64) 
 	maxDigits := len(fmt.Sprintf("%d", endHeight))
 	var pruned uint64 = 0
 
-	logger.Info("Pruning key", "key", key)
+	logger.Debug("Pruning key", "key", key)
+	prunedLastBatch := 0
 	for digits := maxDigits; digits >= 1; digits-- {
 		rangeStart := uint64(math.Max(float64(startHeight), float64(math.Pow10(digits-1))))
 		rangeEnd := uint64(math.Min(float64(endHeight), float64(math.Pow10(digits))-1))
@@ -292,7 +292,7 @@ func deleteHeightRange(db DBAdapter, key string, startHeight, endHeight uint64) 
 		if err != nil {
 			return pruned, fmt.Errorf("error creating iterator for digit length %d: %w", digits, err)
 		}
-		logger.Info("Pruning range", "Start", string(startKey), "end", string(endKey))
+		logger.Debug("Pruning range", "Start", string(startKey), "end", string(endKey))
 
 		for ; iter.Valid(); iter.Next() {
 			k := iter.Key()
@@ -310,13 +310,14 @@ func deleteHeightRange(db DBAdapter, key string, startHeight, endHeight uint64) 
 				continue
 			}
 			pruned++
+			prunedLastBatch++
 			if err := db.Delete(k); err != nil {
 				iter.Close()
 				return pruned, fmt.Errorf("error deleting key %s: %w", string(k), err)
 			}
 
 		}
-		logger.Info("Done with range", "pruned so far", pruned)
+		logger.Info("Done with range", "pruned", prunedLastBatch, "start", string(startKey), "end", string(endKey))
 
 		if err := iter.Error(); err != nil {
 			iter.Close()
@@ -324,6 +325,10 @@ func deleteHeightRange(db DBAdapter, key string, startHeight, endHeight uint64) 
 		}
 
 		iter.Close()
+		if prunedLastBatch == 0 {
+			break
+		}
+		prunedLastBatch = 0
 	}
 
 	return pruned, nil
