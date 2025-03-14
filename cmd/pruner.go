@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"cosmossdk.io/log"
 	"cosmossdk.io/store/metrics"
