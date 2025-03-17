@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -92,6 +93,29 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 	rootCmd.AddCommand(versionCmd)
+
+	dbInfoCmd := &cobra.Command{
+		Use:   "db-info <data_dir>",
+		Short: "Show tendermint state",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dataDir := args[0]
+
+			dbState, err := ShowDbState(dataDir)
+			if err != nil {
+				fmt.Printf("failed %v\n", err)
+				return err
+			}
+			marshalled, err := json.Marshal(dbState)
+			if err != nil {
+				fmt.Printf("failed %v\n", err)
+				return err
+			}
+			fmt.Printf("%s", marshalled)
+			return nil
+		},
+	}
+	rootCmd.AddCommand(dbInfoCmd)
 
 	return rootCmd
 }
