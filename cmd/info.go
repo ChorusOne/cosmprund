@@ -8,6 +8,7 @@ import (
 	db "github.com/cosmos/cosmos-db"
 	"github.com/gogo/protobuf/proto"
 	"github.com/syndtr/goleveldb/leveldb/opt"
+	sei_state "github.com/tendermint/tendermint/proto/tendermint/state"
 )
 
 type LatestState struct {
@@ -18,7 +19,15 @@ type LatestState struct {
 	LastBlockTime   time.Time `json:"last_block_time"`
 }
 
-func newLatestStateFromStateData(stateData *state.State) *LatestState {
+type State interface {
+	GetChainID() string
+	GetInitialHeight() int64
+	GetLastBlockHeight() int64
+	GetLastBlockTime() time.Time
+	GetAppHash() []byte
+}
+
+func newLatestStateFromStateData(stateData State) *LatestState {
 	return &LatestState{
 		ChainID:         stateData.GetChainID(),
 		InitialHeight:   stateData.GetInitialHeight(),
@@ -28,6 +37,16 @@ func newLatestStateFromStateData(stateData *state.State) *LatestState {
 	}
 }
 
+func unmarshalState(stateBytes []byte) (State, error) {
+	var stateData state.State
+	err := proto.Unmarshal(stateBytes, &stateData)
+	return &stateData, err
+}
+func unmarshalSeiState(stateBytes []byte) (State, error) {
+	var stateData sei_state.State
+	err := proto.Unmarshal(stateBytes, &stateData)
+	return &stateData, err
+}
 func ShowDbState(dataDir string) (*LatestState, error) {
 	levelOptions := opt.Options{
 		ReadOnly: true,
@@ -36,7 +55,6 @@ func ShowDbState(dataDir string) (*LatestState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error creating database: %w\n", err)
 	}
-
 	defer func() {
 		db.Close()
 	}()
@@ -47,16 +65,24 @@ func ShowDbState(dataDir string) (*LatestState, error) {
 	}
 
 	stateBytes, err := db.DB().Get([]byte("stateKey"), &readOptions)
-	if err != nil {
-		return nil, fmt.Errorf("error getting state object: %w\n", err)
+	if err == nil {
+		state, err := unmarshalState(stateBytes)
+		if err != nil {
+			return nil, err
+		}
+		return newLatestStateFromStateData(state), nil
 	}
 
-	var stateData state.State
-	err = proto.Unmarshal(stateBytes, &stateData)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing state object: %w\n", err)
+	// sei uses different set of keys:
+	// `prefixState = int64(8)`
+	// but the key will be passed through `orderedcode`, and become 0x88
+	seiStateBytes, err := db.DB().Get([]byte{0x88}, &readOptions)
+	if err == nil {
+		state, err := unmarshalSeiState(seiStateBytes)
+		if err != nil {
+			return nil, err
+		}
+		return newLatestStateFromStateData(state), nil
 	}
-
-	latestState := newLatestStateFromStateData(&stateData)
-	return latestState, nil
+	return nil, fmt.Errorf("error getting state object: %w\n", err)
 }
