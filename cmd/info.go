@@ -47,7 +47,8 @@ func unmarshalSeiState(stateBytes []byte) (State, error) {
 	err := proto.Unmarshal(stateBytes, &stateData)
 	return &stateData, err
 }
-func ShowDbState(dataDir string) (*LatestState, error) {
+
+func DbState(dataDir string) (*LatestState, error) {
 	levelOptions := opt.Options{
 		ReadOnly: true,
 	}
