@@ -29,6 +29,7 @@ type BatchAdapter interface {
 	Set(key, value []byte) error
 	Delete(key []byte) error
 	Write() error
+	Close() error
 }
 
 // IteratorAdapter defines the generic iterator operations
@@ -103,6 +104,10 @@ func (b *cosmosBatchAdapter) Delete(key []byte) error {
 
 func (b *cosmosBatchAdapter) Write() error {
 	return b.batch.Write()
+}
+
+func (b *cosmosBatchAdapter) Close() error {
+	return b.batch.Close()
 }
 
 // Cosmos Iterator implementation
@@ -186,6 +191,10 @@ func (b *cometBatchAdapter) Delete(key []byte) error {
 
 func (b *cometBatchAdapter) Write() error {
 	return b.batch.Write()
+}
+
+func (b *cometBatchAdapter) Close() error {
+	return b.batch.Close()
 }
 
 // Comet Iterator implementation

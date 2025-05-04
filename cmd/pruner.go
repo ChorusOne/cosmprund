@@ -15,7 +15,6 @@ import (
 	"cosmossdk.io/log"
 	"cosmossdk.io/store/metrics"
 	"cosmossdk.io/store/types"
-	dbm "github.com/cometbft/cometbft-db"
 
 	db "github.com/cosmos/cosmos-db"
 	"github.com/rs/zerolog"
@@ -94,21 +93,18 @@ func PruneAppState(dataDir string) error {
 
 		appStore.PruneStores(targetHeight)
 
-		logger.Info("Purging commit info from application.db", "targetHeight", ver-1)
-		prunedS, err := deleteHeightRange(appAdpt, "s/", 0, uint64(targetHeight)-1, asciiHeightParser)
-		if err != nil {
-			logger.Error("failed to deleteHeightRange")
-			return err
-		}
-		logger.Info("purged", "count", prunedS)
 	}
 
 	appPath := path.Join(dataDir, "application.db")
+	dbfmt, err := GetFormat(path.Join(dataDir, "state.db"))
+	if err != nil {
+		return err
+	}
 	size, err := dirSize(appPath)
 	if size < 10*GiB {
 		logger.Info("Starting application DB GC/compact as it's smaller than 10GB", "sizeGB", size/GiB)
 		if runGC {
-			if err := gcDB(dataDir, "application", o, appAdpt); err != nil {
+			if err := gcDB(dataDir, "application", appAdpt, dbfmt); err != nil {
 				return err
 			}
 		} else {
@@ -132,9 +128,9 @@ func PruneAppState(dataDir string) error {
 
 // Implement a "GC" pass by copying only live data to a new DB
 // This function will CLOSE dbToGC.
-func gcDB(dataDir string, dbName string, o opt.Options, dbToGC DBAdapter) error {
+func gcDB(dataDir string, dbName string, dbToGC DBAdapter, dbfmt DBFormat) error {
 	logger.Info("starting garbage collection pass", "db", dbName)
-	newDB, err := db.NewGoLevelDBWithOpts(fmt.Sprintf("%s_gc", dbName), dataDir, &o)
+	newDB, err := OpenDB(dataDir, fmt.Sprintf("%s_gc.db", dbName), dbfmt)
 	if err != nil {
 		logger.Error("Failed to open gc db", "err", err)
 		return err
@@ -212,11 +208,20 @@ func ChownR(path string, uid, gid int) error {
 	})
 }
 
-func pruneBlockAndStateStore(blockStoreAdpt, stateStoreAdpt DBAdapter, pruneHeight uint64) error {
+func pruneBlockAndStateStore(blockStoreAdpt, stateStoreAdpt, appStoreAdpt DBAdapter, pruneHeight uint64) error {
 	type PrefixAndSplitter struct {
 		prefix   string
 		splitter heightParser
 	}
+	// - Block headers (keys H:<HEIGHT>)
+	// - Commit information (keys C:<HEIGHT>)
+	// - ExtendedCommit information (keys EC:<HEIGHT>)
+	// - SeenCommit (keys SC:<HEIGHT>)
+	// - BlockPartKey (keys P:<HEIGHT>:<PART INDEX>)
+	// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
+	// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
+	// for confirmation of this
+
 	for _, key := range []PrefixAndSplitter{{"H:", asciiHeightParser},
 		{"C:", asciiHeightParser},
 		{"EC:", asciiHeightParser},
@@ -229,6 +234,11 @@ func pruneBlockAndStateStore(blockStoreAdpt, stateStoreAdpt DBAdapter, pruneHeig
 		}
 		logger.Info("Pruned", "store", "block", "key", key.prefix, "count", prunedEC)
 	}
+	prunedBH, err := deleteAllByPrefix(blockStoreAdpt, "BH:")
+	logger.Info("Pruned", "store", "block", "key", "BH:", "count", prunedBH)
+	if err != nil {
+		return err
+	}
 	for _, key := range []string{"abciResponsesKey:", "consensusParamsKey:"} {
 		prunedS, err := deleteHeightRange(stateStoreAdpt, key, 0, uint64(pruneHeight), asciiHeightParser)
 		if err != nil {
@@ -236,22 +246,30 @@ func pruneBlockAndStateStore(blockStoreAdpt, stateStoreAdpt DBAdapter, pruneHeig
 		}
 		logger.Info("Pruned", "store", "state", "key", key, "count", prunedS)
 	}
+
+	for _, key := range []string{"s/"} {
+		prunedS, err := deleteHeightRange(appStoreAdpt, key, 0, uint64(pruneHeight)-1, asciiHeightParser)
+		if err != nil {
+			return err
+		}
+		logger.Info("Pruned", "store", "application", "key", key, "count", prunedS)
+	}
 	return nil
 }
-func pruneSeiBlockAndStateStore(blockStoreAdpt, stateStoreAdpt DBAdapter, pruneHeight uint64) error {
+func pruneSeiBlockAndStateStore(blockStoreAdpt, stateStoreAdpt, appStoreAdpt DBAdapter, pruneHeight uint64) error {
 	for _, key := range []int64{0x0, 0x1, 0x2} { // 0x84 is not height but a hash?
 		prunedEC, err := deleteSeiRange(blockStoreAdpt, key, 0, int64(pruneHeight))
 		if err != nil {
 			return err
 		}
-		logger.Info("Pruned", "key", key, "count", prunedEC)
+		logger.Info("Pruned", "key", key, "count", prunedEC, "store", "block")
 	}
 	// 0xe == 14 == prefixFinalizeBlockResponses
 	prunedS, err := deleteSeiRange(stateStoreAdpt, 0xe, 0, int64(pruneHeight))
 	if err != nil {
 		return err
 	}
-	logger.Info("Pruned state", "count", prunedS)
+	logger.Info("Pruned", "count", prunedS, "store", "state")
 	return nil
 }
 
@@ -259,56 +277,47 @@ func pruneSeiBlockAndStateStore(blockStoreAdpt, stateStoreAdpt DBAdapter, pruneH
 func PruneCmtData(dataDir string) error {
 
 	logger.Info("Pruning CMT data")
-	o := opt.Options{
-		DisableSeeksCompaction: true,
-	}
-
 	curState, err := DbState(dataDir)
 	if err != nil {
 		return err
 	}
 
-	stateDB, err := dbm.NewGoLevelDBWithOpts("state", dataDir, &o)
+	dbfmt, err := GetFormat(filepath.Join(dataDir, "state.db"))
 	if err != nil {
 		return err
 	}
-	blockStoreDB, err := dbm.NewGoLevelDBWithOpts("blockstore", dataDir, &o)
+	stateStoreAdpt, err := OpenDB(dataDir, "state.db", dbfmt)
+	if err != nil {
+		return err
+	}
+	blockStoreAdpt, err := OpenDB(dataDir, "blockstore.db", dbfmt)
+	if err != nil {
+		return err
+	}
+	appStoreAdpt, err := OpenDB(dataDir, "application.db", dbfmt)
 	if err != nil {
 		return err
 	}
 
 	logger.Info("Initial state", "ChainId", curState.ChainID, "LastBlockHeight", curState.LastBlockHeight)
 	pruneHeight := uint64(curState.LastBlockHeight) - keepBlocks
-	// PruneBlocks _should_ prune:
-	// - Block headers (keys H:<HEIGHT>)
-	// - Commit information (keys C:<HEIGHT>)
-	// - ExtendedCommit information (keys EC:<HEIGHT>)
-	// - SeenCommit (keys SC:<HEIGHT>)
-	// - BlockPartKey (keys P:<HEIGHT>:<PART INDEX>)
-	// but it does not, so we prune it manually
-	// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
-	// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
-	// for confirmation of this
-
-	blockStoreAdpt := NewCometDBAdapter(blockStoreDB)
-	stateStoreAdpt := NewCometDBAdapter(stateDB)
 	isSei := slices.Contains([]string{"pacific-1", "atlantic-2"}, curState.ChainID)
 
 	if !isSei {
-		err = pruneBlockAndStateStore(blockStoreAdpt, stateStoreAdpt, pruneHeight)
+		err = pruneBlockAndStateStore(blockStoreAdpt, stateStoreAdpt, appStoreAdpt, pruneHeight)
 	} else {
-		err = pruneSeiBlockAndStateStore(blockStoreAdpt, stateStoreAdpt, pruneHeight)
+		err = pruneSeiBlockAndStateStore(blockStoreAdpt, stateStoreAdpt, appStoreAdpt, pruneHeight)
 	}
 	if err != nil {
 		return err
 	}
 
 	if runGC {
-		err := gcDB(dataDir, "blockstore", o, blockStoreAdpt)
+		err := gcDB(dataDir, "blockstore", blockStoreAdpt, dbfmt)
 		if err != nil {
 			return err
 		}
-		return gcDB(dataDir, "state", o, stateStoreAdpt)
+		return gcDB(dataDir, "state", stateStoreAdpt, dbfmt)
 	}
 	logger.Info("NOT running GC on state/block stores")
 	return nil
@@ -335,6 +344,7 @@ func deleteSeiRange(db DBAdapter, key int64, startHeight, endHeight int64) (uint
 		return 0, err
 	}
 	pruned := uint64(0)
+	batch := db.NewBatch()
 	for ; iter.Valid(); iter.Next() {
 		k := iter.Key()
 
@@ -352,7 +362,7 @@ func deleteSeiRange(db DBAdapter, key int64, startHeight, endHeight int64) (uint
 			continue
 		}
 		pruned++
-		if err := db.Delete(k); err != nil {
+		if err := batch.Delete(k); err != nil {
 			iter.Close()
 			return pruned, fmt.Errorf("error deleting key %s: %w", string(k), err)
 		}
@@ -360,6 +370,8 @@ func deleteSeiRange(db DBAdapter, key int64, startHeight, endHeight int64) (uint
 	}
 
 	iter.Close()
+	batch.Write()
+	batch.Close()
 	return pruned, nil
 }
 
@@ -372,6 +384,37 @@ func asciiHeightParserTwoParts(numberPart string) (uint64, error) {
 
 func asciiHeightParser(numberPart string) (uint64, error) {
 	return strconv.ParseUint(string(numberPart), 10, 64)
+}
+
+func deleteAllByPrefix(db DBAdapter, key string) (uint64, error) {
+	iter, err := db.Iterator([]byte(key), nil)
+	if err != nil {
+		return 0, err
+	}
+	batch := db.NewBatch()
+	count := uint64(0)
+
+	for ; iter.Valid(); iter.Next() {
+		k := iter.Key()
+		if !strings.HasPrefix(string(k), key) {
+			// There is no upper bound on the iterator;
+			// we rely on the fact that keys are stored in order
+			// to bail as soon as the prefix is over
+			break
+		}
+		err = batch.Delete(k)
+		count++
+		if err != nil {
+			return 0, err
+		}
+	}
+	if err = batch.Write(); err != nil {
+		return 0, err
+	}
+	if err = batch.Close(); err != nil {
+		return count, err
+	}
+	return count, nil
 }
 
 // Deletes all keys in the range <key>:<start> to <key>:<end>
@@ -405,6 +448,8 @@ func deleteHeightRange(db DBAdapter, key string, startHeight, endHeight uint64, 
 		}
 		logger.Debug("Pruning range", "Start", string(startKey), "end", string(endKey))
 
+		batch := db.NewBatch()
+
 		for ; iter.Valid(); iter.Next() {
 			k := iter.Key()
 			// The keys are of format <key><height>
@@ -418,16 +463,19 @@ func deleteHeightRange(db DBAdapter, key string, startHeight, endHeight uint64, 
 				continue
 			}
 			if number > endHeight {
+				logger.Debug("Skipping height", "height", number, "keepHeight", endHeight)
 				continue
 			}
 			pruned++
 			prunedLastBatch++
-			if err := db.Delete(k); err != nil {
+			if err := batch.Delete(k); err != nil {
 				iter.Close()
 				return pruned, fmt.Errorf("error deleting key %s: %w", string(k), err)
 			}
 
 		}
+		batch.Write()
+		batch.Close()
 
 		if err := iter.Error(); err != nil {
 			iter.Close()

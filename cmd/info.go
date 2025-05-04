@@ -2,12 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/cometbft/cometbft/proto/tendermint/state"
-	db "github.com/cosmos/cosmos-db"
 	"github.com/gogo/protobuf/proto"
-	"github.com/syndtr/goleveldb/leveldb/opt"
 	sei_state "github.com/tendermint/tendermint/proto/tendermint/state"
 )
 
@@ -49,24 +48,18 @@ func unmarshalSeiState(stateBytes []byte) (State, error) {
 }
 
 func DbState(dataDir string) (*LatestState, error) {
-	levelOptions := opt.Options{
-		ReadOnly: true,
-	}
-	db, err := db.NewGoLevelDBWithOpts("state", dataDir, &levelOptions)
+	dbfmt, err := GetFormat(filepath.Join(dataDir, "state.db"))
 	if err != nil {
-		return nil, fmt.Errorf("error creating database: %w\n", err)
+		return nil, err
 	}
-	defer func() {
+	db, err := OpenDB(dataDir, "state.db", dbfmt)
+	if err != nil {
+		return nil, err
+	}
+
+	stateBytes, err := db.Get([]byte("stateKey"))
+	if err == nil && len(stateBytes) > 0 {
 		db.Close()
-	}()
-
-	readOptions := opt.ReadOptions{
-		DontFillCache: true,
-		Strict:        opt.DefaultStrict,
-	}
-
-	stateBytes, err := db.DB().Get([]byte("stateKey"), &readOptions)
-	if err == nil {
 		state, err := unmarshalState(stateBytes)
 		if err != nil {
 			return nil, err
@@ -77,8 +70,9 @@ func DbState(dataDir string) (*LatestState, error) {
 	// sei uses different set of keys:
 	// `prefixState = int64(8)`
 	// but the key will be passed through `orderedcode`, and become 0x88
-	seiStateBytes, err := db.DB().Get([]byte{0x88}, &readOptions)
-	if err == nil {
+	seiStateBytes, err := db.Get([]byte{0x88})
+	if err == nil && len(seiStateBytes) > 0 {
+		db.Close()
 		state, err := unmarshalSeiState(seiStateBytes)
 		if err != nil {
 			return nil, err
