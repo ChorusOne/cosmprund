@@ -9,7 +9,7 @@ LD_FLAGS = -X github.com/binaryholdings/cosmos-pruner/cmd.Version=$(VERSION) \
 BUILD_FLAGS := -ldflags '$(LD_FLAGS)'
 
 build:
-	go build -mod readonly $(BUILD_FLAGS) -o build/cosmprund main.go
+	CGO_ENABLED=0 go build -tags pebbledb -mod readonly $(BUILD_FLAGS) -o build/cosmprund main.go
 
 install:
 	go install -mod readonly $(BUILD_FLAGS) ./...
