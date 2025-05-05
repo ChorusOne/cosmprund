@@ -370,6 +370,8 @@ func deleteSeiRange(db db.DB, key int64, startHeight, endHeight int64) (uint64, 
 		return 0, err
 	}
 	pruned := uint64(0)
+	batch := db.NewBatch()
+	defer batch.Close()
 	for ; iter.Valid(); iter.Next() {
 		k := iter.Key()
 
@@ -387,7 +389,7 @@ func deleteSeiRange(db db.DB, key int64, startHeight, endHeight int64) (uint64, 
 			continue
 		}
 		pruned++
-		if err := db.Delete(k); err != nil {
+		if err := batch.Delete(k); err != nil {
 			iter.Close()
 			return pruned, fmt.Errorf("error deleting key %s: %w", string(k), err)
 		}
@@ -395,6 +397,7 @@ func deleteSeiRange(db db.DB, key int64, startHeight, endHeight int64) (uint64, 
 	}
 
 	iter.Close()
+	batch.Write()
 	return pruned, nil
 }
 
@@ -440,6 +443,8 @@ func deleteHeightRange(db db.DB, key string, startHeight, endHeight uint64, heig
 		}
 		logger.Debug("Pruning range", "Start", string(startKey), "end", string(endKey))
 
+		batch := db.NewBatch()
+
 		for ; iter.Valid(); iter.Next() {
 			k := iter.Key()
 			// The keys are of format <key><height>
@@ -449,7 +454,7 @@ func deleteHeightRange(db db.DB, key string, startHeight, endHeight uint64, heig
 			numberPart := k[len(key):]
 			number, err := heightParser(string(numberPart))
 			if err != nil {
-				fmt.Printf("got err %s\n", err)
+				logger.Error("Failed to parse height", "key", string(k), "err", err)
 				continue
 			}
 			if number > endHeight {
@@ -457,11 +462,19 @@ func deleteHeightRange(db db.DB, key string, startHeight, endHeight uint64, heig
 			}
 			pruned++
 			prunedLastBatch++
-			if err := db.Delete(k); err != nil {
+			if err := batch.Delete(k); err != nil {
 				iter.Close()
+				batch.Close()
 				return pruned, fmt.Errorf("error deleting key %s: %w", string(k), err)
 			}
 
+		}
+
+		if err = batch.Write(); err != nil {
+			return pruned, err
+		}
+		if err = batch.Close(); err != nil {
+			return pruned, err
 		}
 
 		if err := iter.Error(); err != nil {
