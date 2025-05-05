@@ -91,15 +91,6 @@ func PruneAppState(dataDir string) error {
 		logger.Info("Pruning up to", "targetHeight", targetHeight)
 
 		appStore.PruneStores(targetHeight)
-
-		logger.Info("Purging commit info from application.db", "targetHeight", ver-1)
-		prunedS, err := deleteHeightRange(appDB, "s/", 0, uint64(targetHeight)-1, asciiHeightParser)
-		if err != nil {
-			logger.Error("failed to deleteHeightRange")
-			return err
-		}
-		logger.Info("purged", "count", prunedS)
-
 	}
 
 	appPath := path.Join(dataDir, "application.db")
@@ -207,11 +198,19 @@ func ChownR(path string, uid, gid int) error {
 	})
 }
 
-func pruneBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64) error {
+func pruneBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHeight uint64) error {
 	type PrefixAndSplitter struct {
 		prefix   string
 		splitter heightParser
 	}
+	// - Block headers (keys H:<HEIGHT>)
+	// - Commit information (keys C:<HEIGHT>)
+	// - ExtendedCommit information (keys EC:<HEIGHT>)
+	// - SeenCommit (keys SC:<HEIGHT>)
+	// - BlockPartKey (keys P:<HEIGHT>:<PART INDEX>)
+	// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
+	// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
+	// for confirmation of this
 	for _, key := range []PrefixAndSplitter{{"H:", asciiHeightParser},
 		{"C:", asciiHeightParser},
 		{"EC:", asciiHeightParser},
@@ -231,22 +230,30 @@ func pruneBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint6
 		}
 		logger.Info("Pruned", "store", "state", "key", key, "count", prunedS)
 	}
+
+	for _, key := range []string{"s/"} {
+		prunedS, err := deleteHeightRange(appStore, key, 0, uint64(pruneHeight)-1, asciiHeightParser)
+		if err != nil {
+			return err
+		}
+		logger.Info("Pruned", "store", "application", "key", key, "count", prunedS)
+	}
 	return nil
 }
-func pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64) error {
+func pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHeight uint64) error {
 	for _, key := range []int64{0x0, 0x1, 0x2} { // 0x84 is not height but a hash?
 		prunedEC, err := deleteSeiRange(blockStoreDB, key, 0, int64(pruneHeight))
 		if err != nil {
 			return err
 		}
-		logger.Info("Pruned", "key", key, "count", prunedEC)
+		logger.Info("Pruned", "key", key, "count", prunedEC, "store", "block")
 	}
 	// 0xe == 14 == prefixFinalizeBlockResponses
 	prunedS, err := deleteSeiRange(stateStoreDB, 0xe, 0, int64(pruneHeight))
 	if err != nil {
 		return err
 	}
-	logger.Info("Pruned state", "count", prunedS)
+	logger.Info("Pruned state", "count", prunedS, "store", "state")
 	return nil
 }
 
@@ -271,26 +278,19 @@ func PruneCmtData(dataDir string) error {
 	if err != nil {
 		return err
 	}
+	appStoreDB, err := db.NewDB("application", dbfmt, dataDir)
+	if err != nil {
+		return err
+	}
 
 	logger.Info("Initial state", "ChainId", curState.ChainID, "LastBlockHeight", curState.LastBlockHeight)
 	pruneHeight := uint64(curState.LastBlockHeight) - keepBlocks
-	// PruneBlocks _should_ prune:
-	// - Block headers (keys H:<HEIGHT>)
-	// - Commit information (keys C:<HEIGHT>)
-	// - ExtendedCommit information (keys EC:<HEIGHT>)
-	// - SeenCommit (keys SC:<HEIGHT>)
-	// - BlockPartKey (keys P:<HEIGHT>:<PART INDEX>)
-	// but it does not, so we prune it manually
-	// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
-	// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
-	// for confirmation of this
-
 	isSei := slices.Contains([]string{"pacific-1", "atlantic-2"}, curState.ChainID)
 
 	if !isSei {
-		err = pruneBlockAndStateStore(blockStoreDB, stateStoreDB, pruneHeight)
+		err = pruneBlockAndStateStore(blockStoreDB, stateStoreDB, appStoreDB, pruneHeight)
 	} else {
-		err = pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB, pruneHeight)
+		err = pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB, appStoreDB, pruneHeight)
 	}
 	if err != nil {
 		return err
