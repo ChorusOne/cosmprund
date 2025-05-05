@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"math"
@@ -223,6 +224,11 @@ func pruneBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHe
 		}
 		logger.Info("Pruned", "store", "block", "key", key.prefix, "count", prunedEC)
 	}
+	prunedBH, err := deleteAllByPrefix(blockStoreDB, []byte("BH:"))
+	logger.Info("Pruned", "store", "block", "key", "BH:", "count", prunedBH)
+	if err != nil {
+		return err
+	}
 	for _, key := range []string{"abciResponsesKey:", "consensusParamsKey:"} {
 		prunedS, err := deleteHeightRange(stateStoreDB, key, 0, uint64(pruneHeight), asciiHeightParser)
 		if err != nil {
@@ -240,6 +246,7 @@ func pruneBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHe
 	}
 	return nil
 }
+
 func pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHeight uint64) error {
 	for _, key := range []int64{0x0, 0x1, 0x2} { // 0x84 is not height but a hash?
 		prunedEC, err := deleteSeiRange(blockStoreDB, key, 0, int64(pruneHeight))
@@ -255,6 +262,41 @@ func pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, prun
 	}
 	logger.Info("Pruned state", "count", prunedS, "store", "state")
 	return nil
+}
+
+func deleteAllByPrefix(db db.DB, key []byte) (uint64, error) {
+	rangeEnd := make([]byte, len(key))
+	copy(rangeEnd, key)
+	rangeEnd[len(rangeEnd)-1]++
+	iter, err := db.Iterator(key, rangeEnd)
+	defer iter.Close()
+
+	if err != nil {
+		return 0, err
+	}
+	batch := db.NewBatch()
+	defer batch.Close()
+	count := uint64(0)
+
+	for ; iter.Valid(); iter.Next() {
+		k := iter.Key()
+		if !bytes.HasPrefix(k, key) {
+			fmt.Println(k)
+			// There is no upper bound on the iterator;
+			// we rely on the fact that keys are stored in order
+			// to bail as soon as the prefix is over
+			break
+		}
+		err = batch.Delete(k)
+		count++
+		if err != nil {
+			return 0, err
+		}
+	}
+	if err = batch.Write(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // PruneCmtData prunes the cometbft blocks and state based on the amount of blocks to keep
