@@ -108,13 +108,6 @@ func PruneAppState(dataDir string) error {
 		logger.Info("Skipping application DB GC/compact as it's bigger than 10GB", "sizeGB", size/GiB)
 	}
 
-	stat, err := os.Stat(appPath)
-	if stat, ok := stat.Sys().(*syscall.Stat_t); ok {
-		err = ChownR(appPath, int(stat.Uid), int(stat.Gid))
-		if err != nil {
-			logger.Error("Failed to run chown, continuing", "err", err)
-		}
-	}
 	return nil
 }
 
@@ -179,22 +172,10 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 
 	oldPath := filepath.Join(dataDir, fmt.Sprintf("%s.db", dbName))
 
-	oldStat, err := os.Stat(oldPath)
-	if err != nil {
-		logger.Error("Failed stat pre-GC DB", "err", err)
-		return err
-	}
-
 	os.RemoveAll(oldPath)
 	if err := os.Rename(newPath, oldPath); err != nil {
 		logger.Error("Failed to swap GC DB", "err", err)
 		return err
-	}
-	if stat, ok := oldStat.Sys().(*syscall.Stat_t); ok {
-		err = ChownR(oldPath, int(stat.Uid), int(stat.Gid))
-		if err != nil {
-			logger.Error("Failed to run chown, continuing", "err", err)
-		}
 	}
 
 	return nil
@@ -534,4 +515,18 @@ func dirSize(path string) (uint64, error) {
 	})
 
 	return size, err
+}
+
+func Stat(path string) (int, int, error) {
+	stat, err := os.Stat(path)
+	if err != nil {
+		logger.Error("Failed stat db", "err", err, "path", path)
+		return 0, 0, err
+	}
+
+	if stat, ok := stat.Sys().(*syscall.Stat_t); ok {
+		return int(stat.Uid), int(stat.Gid), nil
+	}
+
+	return 0, 0, fmt.Errorf("result of stat was not a Stat_t")
 }

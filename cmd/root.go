@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 
 	"cosmossdk.io/log"
 	"github.com/spf13/cobra"
@@ -38,6 +39,21 @@ func NewRootCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dataDir := args[0]
 			logger = log.NewLogger(os.Stderr, setConfig)
+
+			uid, gid, err := Stat(path.Join(dataDir, "state.db"))
+			if err != nil {
+				logger.Error("can't stat state.db, bailing", "err", err)
+				return err
+			}
+
+			defer func() {
+				for _, db := range []string{"state.db", "blockstore.db", "application.db"} {
+					err = ChownR(path.Join(dataDir, db), uid, gid)
+					if err != nil {
+						logger.Error("Failed to run chown, continuing", "err", err)
+					}
+				}
+			}()
 
 			if cosmosSdk {
 				if err := PruneAppState(dataDir); err != nil {
