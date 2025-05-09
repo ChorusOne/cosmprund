@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"cosmossdk.io/log"
@@ -95,19 +96,6 @@ func PruneAppState(dataDir string) error {
 		appStore.PruneStores(targetHeight)
 	}
 
-	appPath := path.Join(dataDir, "application.db")
-	size, err := dirSize(appPath)
-	if size < 10*GiB {
-		if runGC {
-			logger.Info("Starting application DB GC/compact as it's smaller than 10GB", "sizeGB", size/GiB)
-			if err := gcDB(dataDir, "application", appDB, backend); err != nil {
-				return err
-			}
-		}
-	} else {
-		logger.Info("Skipping application DB GC/compact as it's bigger than 10GB", "sizeGB", size/GiB)
-	}
-
 	return nil
 }
 
@@ -152,7 +140,7 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 			count = 0
 		}
 	}
-	logger.Info("Finished GC, closing")
+	logger.Info("Finished GC, closing", "db", dbName)
 
 	if count > 0 {
 		batch.Write()
@@ -204,38 +192,59 @@ func pruneBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHe
 	// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
 	// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
 	// for confirmation of this
-	for _, key := range []PrefixAndSplitter{{"H:", asciiHeightParser},
-		{"C:", asciiHeightParser},
-		{"EC:", asciiHeightParser},
-		{"SC:", asciiHeightParser},
-		{"P:", asciiHeightParserTwoParts},
-	} {
-		prunedEC, err := deleteHeightRange(blockStoreDB, key.prefix, 0, uint64(pruneHeight), key.splitter)
-		if err != nil {
-			return err
-		}
-		logger.Info("Pruned", "store", "block", "key", key.prefix, "count", prunedEC)
-	}
-	prunedBH, err := deleteAllByPrefix(blockStoreDB, []byte("BH:"))
-	logger.Info("Pruned", "store", "block", "key", "BH:", "count", prunedBH)
-	if err != nil {
-		return err
-	}
-	for _, key := range []string{"abciResponsesKey:", "consensusParamsKey:"} {
-		prunedS, err := deleteHeightRange(stateStoreDB, key, 0, uint64(pruneHeight), asciiHeightParser)
-		if err != nil {
-			return err
-		}
-		logger.Info("Pruned", "store", "state", "key", key, "count", prunedS)
-	}
+	var wg sync.WaitGroup
+	wg.Add(3)
 
-	for _, key := range []string{"s/"} {
-		prunedS, err := deleteHeightRange(appStore, key, 0, uint64(pruneHeight)-1, asciiHeightParser)
-		if err != nil {
-			return err
+	go func() {
+		defer wg.Done()
+		for _, key := range []PrefixAndSplitter{{"H:", asciiHeightParser},
+			{"C:", asciiHeightParser},
+			{"EC:", asciiHeightParser},
+			{"SC:", asciiHeightParser},
+			{"P:", asciiHeightParserTwoParts},
+		} {
+
+			prunedEC, err := deleteHeightRange(blockStoreDB, key.prefix, 0, uint64(pruneHeight), key.splitter)
+			if err != nil {
+				logger.Error("Failed to prune", "store", "block", "key", key.prefix)
+				continue
+			}
+			logger.Info("Pruned", "store", "block", "key", key.prefix, "count", prunedEC)
 		}
-		logger.Info("Pruned", "store", "application", "key", key, "count", prunedS)
-	}
+
+		prunedBH, err := deleteAllByPrefix(blockStoreDB, []byte("BH:"))
+		if err != nil {
+			logger.Error("Failed to prune", "store", "block", "key", "BH:")
+		} else {
+			logger.Info("Pruned", "store", "block", "key", "BH:", "count", prunedBH)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for _, key := range []string{"abciResponsesKey:", "consensusParamsKey:"} {
+			prunedS, err := deleteHeightRange(stateStoreDB, key, 0, uint64(pruneHeight), asciiHeightParser)
+			if err != nil {
+				logger.Error("Failed to prune", "store", "state", "key", key)
+			} else {
+				logger.Info("Pruned", "store", "state", "key", key, "count", prunedS)
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for _, key := range []string{"s/"} {
+			prunedS, err := deleteHeightRange(appStore, key, 0, uint64(pruneHeight)-1, asciiHeightParser)
+			if err != nil {
+				logger.Error("Failed to prune", "store", "application", "key", key)
+			} else {
+				logger.Info("Pruned", "store", "application", "key", key, "count", prunedS)
+			}
+		}
+	}()
+
+	wg.Wait()
 	return nil
 }
 
@@ -347,13 +356,50 @@ func PruneCmtData(dataDir string) error {
 	}
 
 	if runGC {
-		err := gcDB(dataDir, "blockstore", blockStoreDB, dbfmt)
-		if err != nil {
-			return err
-		}
-		return gcDB(dataDir, "state", stateStoreDB, dbfmt)
+		var wg sync.WaitGroup
+		wg.Add(3)
+
+		go func() {
+			defer wg.Done()
+			if err := gcDB(dataDir, "blockstore", blockStoreDB, dbfmt); err != nil {
+				logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
+				return
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			if err := gcDB(dataDir, "state", stateStoreDB, dbfmt); err != nil {
+				logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
+				return
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			appPath := path.Join(dataDir, "application.db")
+			size, err := dirSize(appPath)
+			if err != nil {
+				logger.Error("Failed to get dir size for app.db, skipping GC", "err", err)
+				return
+			}
+			if size < 10*GiB {
+				logger.Info("Starting application DB GC/compact as it's smaller than 10GB", "sizeGB", size/GiB)
+				if err := gcDB(dataDir, "application", appStoreDB, dbfmt); err != nil {
+					logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
+					return
+				}
+			} else {
+				logger.Info("Skipping application DB GC/compact as it's bigger than 10GB", "sizeGB", size/GiB)
+			}
+		}()
+
+		wg.Wait()
+
+		return nil
+	} else {
+		logger.Info("NOT running GC on state/block stores")
 	}
-	logger.Info("NOT running GC on state/block stores")
 	return nil
 }
 
