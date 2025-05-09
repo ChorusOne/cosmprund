@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"math"
@@ -16,6 +17,7 @@ import (
 	"cosmossdk.io/log"
 	"cosmossdk.io/store/metrics"
 	"cosmossdk.io/store/types"
+	"golang.org/x/sync/errgroup"
 
 	db "github.com/cosmos/cosmos-db"
 	"github.com/rs/zerolog"
@@ -179,72 +181,93 @@ func ChownR(path string, uid, gid int) error {
 	})
 }
 
+type PrefixAndSplitter struct {
+	prefix   string
+	splitter heightParser
+}
+
+// - Block headers (keys H:<HEIGHT>)
+// - Commit information (keys C:<HEIGHT>)
+// - ExtendedCommit information (keys EC:<HEIGHT>)
+// - SeenCommit (keys SC:<HEIGHT>)
+// - BlockPartKey (keys P:<HEIGHT>:<PART INDEX>)
+// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
+// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
+// for confirmation of this
+// TODO: see if we can import that as consts?
+var blockKeyInfos = []PrefixAndSplitter{
+	{"H:", asciiHeightParser},         // block headers
+	{"C:", asciiHeightParser},         // commit info
+	{"EC:", asciiHeightParser},        // extended commits
+	{"SC:", asciiHeightParser},        // seen commits
+	{"P:", asciiHeightParserTwoParts}, // block parts
+}
+
+var stateKeyInfos = []string{
+	"abciResponsesKey:",
+	"consensusParamsKey:",
+}
+
+var appKeyInfos = []string{
+	"s/",
+}
+
 func pruneBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHeight uint64) error {
-	type PrefixAndSplitter struct {
-		prefix   string
-		splitter heightParser
-	}
-	// - Block headers (keys H:<HEIGHT>)
-	// - Commit information (keys C:<HEIGHT>)
-	// - ExtendedCommit information (keys EC:<HEIGHT>)
-	// - SeenCommit (keys SC:<HEIGHT>)
-	// - BlockPartKey (keys P:<HEIGHT>:<PART INDEX>)
-	// See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
-	// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
-	// for confirmation of this
-	var wg sync.WaitGroup
-	wg.Add(3)
+	g, _ := errgroup.WithContext(context.Background())
 
-	go func() {
-		defer wg.Done()
-		for _, key := range []PrefixAndSplitter{{"H:", asciiHeightParser},
-			{"C:", asciiHeightParser},
-			{"EC:", asciiHeightParser},
-			{"SC:", asciiHeightParser},
-			{"P:", asciiHeightParserTwoParts},
-		} {
-
-			prunedEC, err := deleteHeightRange(blockStoreDB, key.prefix, 0, uint64(pruneHeight), key.splitter)
-			if err != nil {
-				logger.Error("Failed to prune", "store", "block", "key", key.prefix)
-				continue
-			}
-			logger.Info("Pruned", "store", "block", "key", key.prefix, "count", prunedEC)
+	g.Go(func() error {
+		if err := pruneKeys(
+			blockStoreDB,
+			"block",
+			blockKeyInfos,
+			func(store db.DB, ki PrefixAndSplitter) (uint64, error) {
+				return deleteHeightRange(store, ki.prefix, 0, pruneHeight, ki.splitter)
+			},
+		); err != nil {
+			return err
 		}
-
-		prunedBH, err := deleteAllByPrefix(blockStoreDB, []byte("BH:"))
+		count, err := deleteAllByPrefix(blockStoreDB, []byte("BH:"))
 		if err != nil {
-			logger.Error("Failed to prune", "store", "block", "key", "BH:")
-		} else {
-			logger.Info("Pruned", "store", "block", "key", "BH:", "count", prunedBH)
+			return fmt.Errorf("prune block BH: %w", err)
 		}
-	}()
+		logger.Info("Pruned", "store", "block", "key", "BH:", "count", count)
+		return nil
+	})
 
-	go func() {
-		defer wg.Done()
-		for _, key := range []string{"abciResponsesKey:", "consensusParamsKey:"} {
-			prunedS, err := deleteHeightRange(stateStoreDB, key, 0, uint64(pruneHeight), asciiHeightParser)
-			if err != nil {
-				logger.Error("Failed to prune", "store", "state", "key", key)
-			} else {
-				logger.Info("Pruned", "store", "state", "key", key, "count", prunedS)
-			}
+	g.Go(func() error {
+		return pruneKeys(
+			stateStoreDB, "state", stateKeyInfos,
+			func(store db.DB, key string) (uint64, error) {
+				return deleteHeightRange(store, key, 0, pruneHeight, asciiHeightParser)
+			},
+		)
+	})
+
+	g.Go(func() error {
+		return pruneKeys(
+			appStore, "application", appKeyInfos,
+			func(store db.DB, key string) (uint64, error) {
+				return deleteHeightRange(store, key, 0, pruneHeight-1, asciiHeightParser)
+			},
+		)
+	})
+
+	return g.Wait()
+}
+
+func pruneKeys[T any](
+	store db.DB,
+	storeName string,
+	keyInfo []T,
+	deleteFn func(db.DB, T) (uint64, error),
+) error {
+	for _, k := range keyInfo {
+		count, err := deleteFn(store, k)
+		if err != nil {
+			return fmt.Errorf("prune %s key %v: %w", storeName, k, err)
 		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for _, key := range []string{"s/"} {
-			prunedS, err := deleteHeightRange(appStore, key, 0, uint64(pruneHeight)-1, asciiHeightParser)
-			if err != nil {
-				logger.Error("Failed to prune", "store", "application", "key", key)
-			} else {
-				logger.Info("Pruned", "store", "application", "key", key, "count", prunedS)
-			}
-		}
-	}()
-
-	wg.Wait()
+		logger.Info("Pruned", "store", storeName, "key", k, "count", count)
+	}
 	return nil
 }
 
