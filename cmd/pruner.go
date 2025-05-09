@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 
 	"cosmossdk.io/log"
@@ -212,45 +211,49 @@ var appKeyInfos = []string{
 	"s/",
 }
 
+func pruneBlockStore(blockStoreDB db.DB, pruneHeight uint64) error {
+	if err := pruneKeys(
+		blockStoreDB,
+		"block",
+		blockKeyInfos,
+		func(store db.DB, ki PrefixAndSplitter) (uint64, error) {
+			return deleteHeightRange(store, ki.prefix, 0, pruneHeight, ki.splitter)
+		},
+	); err != nil {
+		return err
+	}
+	count, err := deleteAllByPrefix(blockStoreDB, []byte("BH:"))
+	if err != nil {
+		return fmt.Errorf("prune block BH: %w", err)
+	}
+	logger.Info("Pruned", "store", "block", "key", "BH:", "count", count)
+	return nil
+}
+
+func pruneStateStore(stateStoreDB db.DB, pruneHeight uint64) error {
+	return pruneKeys(
+		stateStoreDB, "state", stateKeyInfos,
+		func(store db.DB, key string) (uint64, error) {
+			return deleteHeightRange(store, key, 0, pruneHeight, asciiHeightParser)
+		},
+	)
+}
+
+func pruneAppStore(appStore db.DB, pruneHeight uint64) error {
+	return pruneKeys(
+		appStore, "application", appKeyInfos,
+		func(store db.DB, key string) (uint64, error) {
+			return deleteHeightRange(store, key, 0, pruneHeight-1, asciiHeightParser)
+		},
+	)
+}
+
 func pruneBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHeight uint64) error {
 	g, _ := errgroup.WithContext(context.Background())
 
-	g.Go(func() error {
-		if err := pruneKeys(
-			blockStoreDB,
-			"block",
-			blockKeyInfos,
-			func(store db.DB, ki PrefixAndSplitter) (uint64, error) {
-				return deleteHeightRange(store, ki.prefix, 0, pruneHeight, ki.splitter)
-			},
-		); err != nil {
-			return err
-		}
-		count, err := deleteAllByPrefix(blockStoreDB, []byte("BH:"))
-		if err != nil {
-			return fmt.Errorf("prune block BH: %w", err)
-		}
-		logger.Info("Pruned", "store", "block", "key", "BH:", "count", count)
-		return nil
-	})
-
-	g.Go(func() error {
-		return pruneKeys(
-			stateStoreDB, "state", stateKeyInfos,
-			func(store db.DB, key string) (uint64, error) {
-				return deleteHeightRange(store, key, 0, pruneHeight, asciiHeightParser)
-			},
-		)
-	})
-
-	g.Go(func() error {
-		return pruneKeys(
-			appStore, "application", appKeyInfos,
-			func(store db.DB, key string) (uint64, error) {
-				return deleteHeightRange(store, key, 0, pruneHeight-1, asciiHeightParser)
-			},
-		)
-	})
+	g.Go(func() error { return pruneBlockStore(blockStoreDB, pruneHeight) })
+	g.Go(func() error { return pruneStateStore(stateStoreDB, pruneHeight) })
+	g.Go(func() error { return pruneAppStore(appStore, pruneHeight) })
 
 	return g.Wait()
 }
@@ -379,45 +382,44 @@ func PruneCmtData(dataDir string) error {
 	}
 
 	if runGC {
-		var wg sync.WaitGroup
-		wg.Add(3)
+		g, _ := errgroup.WithContext(context.Background())
 
-		go func() {
-			defer wg.Done()
+		g.Go(func() error {
 			if err := gcDB(dataDir, "blockstore", blockStoreDB, dbfmt); err != nil {
 				logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
-				return
+				return err
 			}
-		}()
+			return nil
+		})
 
-		go func() {
-			defer wg.Done()
+		g.Go(func() error {
 			if err := gcDB(dataDir, "state", stateStoreDB, dbfmt); err != nil {
 				logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
-				return
+				return err
 			}
-		}()
+			return nil
+		})
 
-		go func() {
-			defer wg.Done()
+		g.Go(func() error {
 			appPath := path.Join(dataDir, "application.db")
 			size, err := dirSize(appPath)
 			if err != nil {
 				logger.Error("Failed to get dir size for app.db, skipping GC", "err", err)
-				return
+				return err
 			}
 			if size < 10*GiB {
 				logger.Info("Starting application DB GC/compact as it's smaller than 10GB", "sizeGB", size/GiB)
 				if err := gcDB(dataDir, "application", appStoreDB, dbfmt); err != nil {
 					logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
-					return
+					return err
 				}
 			} else {
 				logger.Info("Skipping application DB GC/compact as it's bigger than 10GB", "sizeGB", size/GiB)
 			}
-		}()
+			return nil
+		})
 
-		wg.Wait()
+		g.Wait()
 
 		return nil
 	} else {
