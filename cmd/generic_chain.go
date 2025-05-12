@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/binaryholdings/cosmos-pruner/cmd/celestia"
+	"github.com/cosmos/gogoproto/proto"
+
 	db "github.com/cosmos/cosmos-db"
 	"golang.org/x/sync/errgroup"
 )
@@ -26,7 +29,6 @@ func (p PrefixAndSplitter) String() string {
 // - SeenCommit (keys SC:<HEIGHT>)
 // - BlockPartKey (keys P:<HEIGHT>:<PART INDEX>)
 // See https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L38
-// https://github.com/cometbft/cometbft/blob/4591ef97ce5de702db7d6a3bbcb960ecf635fd76/store/db_key_layout.go#L68
 // for confirmation of this
 // TODO: see if we can import that as consts?
 var blockKeyInfos = []PrefixAndSplitter{
@@ -57,11 +59,30 @@ func pruneBlockStore(blockStoreDB db.DB, pruneHeight uint64) error {
 	); err != nil {
 		return err
 	}
-	count, err := deleteAllByPrefix(blockStoreDB, []byte("BH:"))
+	count, err := deleteAllByPrefix(blockStoreDB, []byte("BH:"), func(key, value []byte) (bool, error) {
+		return true, nil
+	})
 	if err != nil {
 		return fmt.Errorf("prune block BH: %w", err)
 	}
 	logger.Info("Pruned", "store", "block", "key", "BH:", "count", count)
+
+	// Defined
+	// https://github.com/celestiaorg/celestia-core/blob/88dae3c1d03e6225c23076c1d2a3cce7ef58f79d/store/store.go#L656
+	// Deleted
+	// https://github.com/celestiaorg/celestia-core/blob/88dae3c1d03e6225c23076c1d2a3cce7ef58f79d/store/store.go#L386
+	// with the transaction's height and index if committed, or its pending, evicted, or unknown status.
+	count, err = deleteAllByPrefix(blockStoreDB, []byte("TH:"), func(key, val []byte) (bool, error) {
+		var txi celestia.CelestiaTxInfo
+		if err = proto.Unmarshal(val, &txi); err != nil {
+			return false, err
+		}
+		return txi.Height < int64(pruneHeight), nil
+	})
+	if err != nil {
+		return fmt.Errorf("prune block TH: %w", err)
+	}
+	logger.Info("Pruned", "store", "block", "key", "TH:", "count", count)
 	return nil
 }
 
@@ -109,7 +130,7 @@ func pruneKeys[T any](
 	return nil
 }
 
-func deleteAllByPrefix(db db.DB, key []byte) (uint64, error) {
+func deleteAllByPrefix(db db.DB, key []byte, cb func([]byte, []byte) (bool, error)) (uint64, error) {
 	rangeEnd := make([]byte, len(key))
 	copy(rangeEnd, key)
 	rangeEnd[len(rangeEnd)-1]++
@@ -120,20 +141,40 @@ func deleteAllByPrefix(db db.DB, key []byte) (uint64, error) {
 		return 0, err
 	}
 	batch := db.NewBatch()
-	defer batch.Close()
 	count := uint64(0)
 
 	for ; iter.Valid(); iter.Next() {
 		k := iter.Key()
-		err = batch.Delete(k)
-		count++
+		v := iter.Value()
+		del, err := cb(k, v)
 		if err != nil {
-			return 0, err
+			return count, err
+		}
+		if del {
+			err = batch.Delete(k)
+			count++
+			if err != nil {
+				return count, err
+			}
+		}
+		if count > 0 && count%1_000_000 == 0 {
+			if err = batch.Write(); err != nil {
+				return count, err
+			}
+			if err = batch.Close(); err != nil {
+				return count, err
+			}
+			batch = db.NewBatch()
+			logger.Info("Deleted many keys, new batch", "count", count, "prefix", string(key))
 		}
 	}
 	if err = batch.Write(); err != nil {
-		return 0, err
+		return count, err
 	}
+	if err = batch.Close(); err != nil {
+		return count, err
+	}
+
 	return count, nil
 }
 

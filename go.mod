@@ -1,6 +1,6 @@
 module github.com/binaryholdings/cosmos-pruner
 
-go 1.23.1
+go 1.23.5
 
 require (
 	cosmossdk.io/errors v1.0.1
