@@ -24,10 +24,28 @@ sudo systemctl stop cosmovisor
 
 Flags: 
 
-- `blocks`: amount of blocks to keep on the node (Default 100)
-- `versions`: amount of app state versions to keep on the node (Default 10)
-- `cosmos-sdk`: If pruning a non cosmos-sdk chain, like Nomic, you only want to use cometbft pruning or if you want to only prune cometbft block & state as this is generally large on machines(Default true)
-- `cometbft`: If the user wants to only prune application data they can disable pruning of cometbft data. (Default true)
+```
+Flags:
+      --cometbft             set to false you dont want to prune cometbft data (default true)
+      --cosmos-sdk           set to false if using only with cometbft (default true)
+      --force-compress-app   compress application.db even if it's larger than reasonable (10 GB)
+                             The entire database needs to be read, so it will be slow
+  -h, --help                 help for prune
+  -b, --keep-blocks uint     set the amount of blocks to keep (default 100)
+  -v, --keep-versions uint   set the amount of versions to keep in the application store (default 10)
+      --run-gc               set to false to prevent a GC pass (default true)
+```
+
+## Shortcomings
+
+Not all stores are pruned, though usually `block`, `state` and `application` are the bulk of the data.
+
+Within the `application` store, this tool currently only purges old states (`s/` keys). Some chains store extra data here, and each chain required custom logic to prune it.
+
+If you have a chain with a large `application` dir, you can try running statesync every once in a while to reduce it, alternatively, make an issue in this repo and we'll see if it can be pruned externally.
+
+If no historical data is stored in `application.db`, it's usually pruned to a few (~50) MB. If there's significant historical data, then `application.db` will be large (20+GB); these cases are not supported yet,
+so using a large value for `--compress-app-under-gb` is not likely to achieve much.
 
 ## Metadata
 

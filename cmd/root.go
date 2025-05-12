@@ -17,12 +17,13 @@ var (
 )
 
 var (
-	cosmosSdk    bool
-	cometbft     bool
-	keepBlocks   uint64
-	runGC        bool
-	keepVersions uint64
-	appName      = "cosmprund"
+	cosmosSdk        bool
+	cometbft         bool
+	keepBlocks       uint64
+	runGC            bool
+	forceCompressApp bool
+	keepVersions     uint64
+	appName          = "cosmprund"
 )
 
 func NewRootCmd() *cobra.Command {
@@ -75,6 +76,11 @@ func NewRootCmd() *cobra.Command {
 
 	rootCmd.AddCommand(pruneCmd)
 
+	// --force-compress-app flag
+	pruneCmd.PersistentFlags().BoolVar(&forceCompressApp, "force-compress-app", false, fmt.Sprintf("compress application.db even if it's larger than reasonable (%d GB)\nThe entire database needs to be read, so it will be slow", THRESHOLD_APP_SIZE/GiB))
+	if err := viper.BindPFlag("force-compress-app", pruneCmd.PersistentFlags().Lookup("force-compress-app")); err != nil {
+		panic(err)
+	}
 	// --run-gc flag
 	pruneCmd.PersistentFlags().BoolVar(&runGC, "run-gc", true, "set to false to prevent a GC pass")
 	if err := viper.BindPFlag("run-gc", pruneCmd.PersistentFlags().Lookup("run-gc")); err != nil {
