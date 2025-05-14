@@ -122,7 +122,7 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 		logger.Error("Failed to get original db iterator", "err", err)
 		return err
 	}
-	batchSize := 10_000
+	batchSize := 1_000
 	batch := newDB.NewBatch()
 	count := 0
 
@@ -212,6 +212,7 @@ func PruneCmtData(dataDir string) error {
 		err = pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB, appStoreDB, pruneHeight)
 	}
 	if err != nil {
+		logger.Error("Failed to prune", "err", err)
 		// gcDB closes the databases, and we can't close pebbledb instances twice
 		blockStoreDB.Close()
 		stateStoreDB.Close()
