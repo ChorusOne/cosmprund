@@ -204,6 +204,7 @@ func PruneCmtData(dataDir string) error {
 
 	logger.Info("Initial state", "ChainId", curState.ChainID, "LastBlockHeight", curState.LastBlockHeight)
 	pruneHeight := uint64(curState.LastBlockHeight) - keepBlocks
+	logger.Info("Pruning up to", "targetHeight", pruneHeight)
 	isSei := slices.Contains([]string{"pacific-1", "atlantic-2"}, curState.ChainID)
 
 	if !isSei {
