@@ -44,6 +44,7 @@ var blockKeyInfos = []PrefixAndSplitter{
 var stateKeyInfos = []string{
 	"abciResponsesKey:",
 	"consensusParamsKey:",
+	"validatorsKey:",
 }
 
 var appKeyInfos = []string{
