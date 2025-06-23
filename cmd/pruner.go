@@ -247,7 +247,7 @@ func PruneCmtData(dataDir string) error {
 				logger.Error("Failed to get dir size for app.db, skipping GC", "err", err)
 				return err
 			}
-			if size < THRESHOLD_APP_SIZE*GiB || forceCompressApp {
+			if size < THRESHOLD_APP_SIZE || forceCompressApp {
 				logger.Info("Starting application DB GC/compact", "sizeGB", size/GiB, "thresholdGB", THRESHOLD_APP_SIZE/GiB, "forced", forceCompressApp)
 				if err := gcDB(dataDir, "application", appStoreDB, dbfmt); err != nil {
 					logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
