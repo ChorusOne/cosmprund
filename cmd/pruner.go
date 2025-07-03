@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -112,8 +113,7 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 	var err error
 
 	if dbfmt == db.GoLevelDBBackend {
-		opts := opt.Options{WriteBuffer: 1_000_000}
-		// Database will only flush the WAL to a SST file after WriteBuffer is full
+		opts := opt.Options{WriteBuffer: 1_000_000} // Database will only flush the WAL to a SST file after WriteBuffer is full
 		newDB, err = db.NewGoLevelDBWithOpts(fmt.Sprintf("%s_gc", dbName), dataDir, &opts)
 	} else {
 		newDB, err = db.NewDB(fmt.Sprintf("%s_gc", dbName), dbfmt, dataDir)
@@ -198,12 +198,27 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 
 func ChownR(path string, uid, gid int) error {
 	logger.Info("Running chown", "path", path, "uid", uid, "gid", gid)
-	return filepath.Walk(path, func(name string, info os.FileInfo, err error) error {
-		if err == nil {
-			err = os.Chown(name, uid, gid)
+
+	var errs []error
+
+	err := filepath.Walk(path, func(name string, info os.FileInfo, err error) error {
+		// here, walk errored. return it immediately
+		if err != nil {
+			return err
 		}
-		return err
+
+		// chown error: gather them and return in bulk
+		if chownErr := os.Chown(name, uid, gid); chownErr != nil {
+			errs = append(errs, chownErr)
+		}
+		return nil
 	})
+
+	if err != nil {
+		return err
+	}
+
+	return errors.Join(errs...)
 }
 
 // PruneCmtData prunes the cometbft blocks and state based on the amount of blocks to keep
@@ -285,6 +300,9 @@ func PruneCmtData(dataDir string) error {
 				}
 			} else {
 				logger.Info("Skipping application DB GC/compact", "sizeGB", size/GiB, "thresholdGB", THRESHOLD_APP_SIZE/GiB, "forced", forceCompressApp)
+				if err := appStoreDB.Close(); err != nil {
+					logger.Error("error closing app db: %s", err)
+				}
 			}
 			return nil
 		})
@@ -292,7 +310,11 @@ func PruneCmtData(dataDir string) error {
 		return g.Wait()
 	} else {
 		logger.Info("NOT running GC on state/block stores")
+		_ = blockStoreDB.Close()
+		_ = stateStoreDB.Close()
+		_ = appStoreDB.Close()
 	}
+
 	return nil
 }
 
