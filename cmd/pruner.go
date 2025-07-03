@@ -39,7 +39,12 @@ func PruneAppState(dataDir string) error {
 	if err != nil {
 		return err
 	}
-	defer appDB.Close()
+	defer func() {
+		err := appDB.Close()
+		if err != nil {
+			logger.Error("error (in defer) closing app db: %s", err)
+		}
+	}()
 
 	logger.Info("pruning application state")
 
@@ -79,7 +84,7 @@ func PruneAppState(dataDir string) error {
 	versions := appStore.GetAllVersions()
 	if len(versions) > 0 {
 		v64 := make([]int64, len(versions))
-		for i := 0; i < len(versions); i++ {
+		for i := range versions {
 			v64[i] = int64(versions[i])
 		}
 
@@ -90,7 +95,10 @@ func PruneAppState(dataDir string) error {
 		targetHeight := v64[idx] - 1
 		logger.Info("Pruning up to", "targetHeight", targetHeight)
 
-		appStore.PruneStores(targetHeight)
+		if err := appStore.PruneStores(targetHeight); err != nil {
+			logger.Error("error pruning app state: %s", err)
+			return err
+		}
 	}
 
 	return nil
@@ -127,12 +135,17 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 	count := 0
 
 	for ; iter.Valid(); iter.Next() {
-		batch.Set(iter.Key(), iter.Value())
+		_ = batch.Set(iter.Key(), iter.Value())
 		count++
 
 		if count >= batchSize {
-			batch.Write()
-			batch.Close()
+			if err := batch.Write(); err != nil {
+				logger.Error("error writing batch: %s, continuing", err)
+			}
+
+			if err := batch.Close(); err != nil {
+				logger.Error("error closing batch: %s, continuing", err)
+			}
 			batch = newDB.NewBatch()
 			count = 0
 		}
@@ -140,24 +153,41 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 	logger.Info("Finished GC, closing", "db", dbName)
 
 	if count > 0 {
-		batch.Write()
+		if err := batch.Write(); err != nil {
+			logger.Error("error writing batch: %s, continuing", err)
+		}
 	}
-	iter.Close()
-	batch.Close()
 
-	dbToGC.Close()
-	newDB.Close()
+	_ = iter.Close()
+
+	if err := batch.Close(); err != nil {
+		logger.Error("error closing batch: %s, continuing", err)
+	}
+
+	if err := dbToGC.Close(); err != nil {
+		logger.Error("error closing gc db: %s, continuing", err)
+	}
+
+	if err := newDB.Close(); err != nil {
+		logger.Error("error closing newdb: %s, continuing", err)
+	}
 
 	newPath := filepath.Join(dataDir, fmt.Sprintf("%s_gc.db", dbName))
 	if count == 0 {
 		logger.Info("gc complete, but empty")
-		os.RemoveAll(newPath)
+		if err := os.RemoveAll(newPath); err != nil {
+			logger.Error("error removing files from %s :%s", newPath, err)
+			return fmt.Errorf("error removing files: %w", err) // should we actually exit here?
+		}
 		return nil
 	}
 
 	oldPath := filepath.Join(dataDir, fmt.Sprintf("%s.db", dbName))
 
-	os.RemoveAll(oldPath)
+	if err := os.RemoveAll(oldPath); err != nil {
+		logger.Error("error removing files from %s :%s", oldPath, err)
+		return fmt.Errorf("error removing files: %w", err) // should we actually exit here?
+	}
 	if err := os.Rename(newPath, oldPath); err != nil {
 		logger.Error("Failed to swap GC DB", "err", err)
 		return err
@@ -215,9 +245,9 @@ func PruneCmtData(dataDir string) error {
 	if err != nil {
 		logger.Error("Failed to prune", "err", err)
 		// gcDB closes the databases, and we can't close pebbledb instances twice
-		blockStoreDB.Close()
-		stateStoreDB.Close()
-		appStoreDB.Close()
+		_ = blockStoreDB.Close()
+		_ = stateStoreDB.Close()
+		_ = appStoreDB.Close()
 		return err
 	}
 
@@ -259,9 +289,7 @@ func PruneCmtData(dataDir string) error {
 			return nil
 		})
 
-		g.Wait()
-
-		return nil
+		return g.Wait()
 	} else {
 		logger.Info("NOT running GC on state/block stores")
 	}

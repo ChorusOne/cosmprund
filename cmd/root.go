@@ -23,7 +23,6 @@ var (
 	runGC            bool
 	forceCompressApp bool
 	keepVersions     uint64
-	appName          = "cosmprund"
 )
 
 func NewRootCmd() *cobra.Command {
