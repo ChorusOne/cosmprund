@@ -177,7 +177,6 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 		logger.Info("gc complete, but empty")
 		if err := os.RemoveAll(newPath); err != nil {
 			logger.Error("error removing files from %s :%s", newPath, err)
-			return fmt.Errorf("error removing files: %w", err) // should we actually exit here?
 		}
 		return nil
 	}
@@ -186,7 +185,6 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 
 	if err := os.RemoveAll(oldPath); err != nil {
 		logger.Error("error removing files from %s :%s", oldPath, err)
-		return fmt.Errorf("error removing files: %w", err) // should we actually exit here?
 	}
 	if err := os.Rename(newPath, oldPath); err != nil {
 		logger.Error("Failed to swap GC DB", "err", err)
