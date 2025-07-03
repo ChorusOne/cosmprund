@@ -43,7 +43,7 @@ func PruneAppState(dataDir string) error {
 	defer func() {
 		err := appDB.Close()
 		if err != nil {
-			logger.Error("error (in defer) closing app db: %s", err)
+			logger.Error("error (in defer) closing app db", "err", err)
 		}
 	}()
 
@@ -97,8 +97,7 @@ func PruneAppState(dataDir string) error {
 		logger.Info("Pruning up to", "targetHeight", targetHeight)
 
 		if err := appStore.PruneStores(targetHeight); err != nil {
-			logger.Error("error pruning app state: %s", err)
-			return err
+			logger.Error("error pruning app state", "err", err)
 		}
 	}
 
@@ -140,11 +139,11 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 
 		if count >= batchSize {
 			if err := batch.Write(); err != nil {
-				logger.Error("error writing batch: %s, continuing", err)
+				logger.Error("error writing batch, continuing", "err", err)
 			}
 
 			if err := batch.Close(); err != nil {
-				logger.Error("error closing batch: %s, continuing", err)
+				logger.Error("error closing batch: continuing", "err", err)
 			}
 			batch = newDB.NewBatch()
 			count = 0
@@ -154,29 +153,29 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 
 	if count > 0 {
 		if err := batch.Write(); err != nil {
-			logger.Error("error writing batch: %s, continuing", err)
+			logger.Error("error writing batch, continuing", "err", err)
 		}
 	}
 
 	_ = iter.Close()
 
 	if err := batch.Close(); err != nil {
-		logger.Error("error closing batch: %s, continuing", err)
+		logger.Error("error closing batch, continuing", "err", err)
 	}
 
 	if err := dbToGC.Close(); err != nil {
-		logger.Error("error closing gc db: %s, continuing", err)
+		logger.Error("error closing gc db, continuing", "err", err)
 	}
 
 	if err := newDB.Close(); err != nil {
-		logger.Error("error closing newdb: %s, continuing", err)
+		logger.Error("error closing newdb, continuing", "err", err)
 	}
 
 	newPath := filepath.Join(dataDir, fmt.Sprintf("%s_gc.db", dbName))
 	if count == 0 {
 		logger.Info("gc complete, but empty")
 		if err := os.RemoveAll(newPath); err != nil {
-			logger.Error("error removing files from %s :%s", newPath, err)
+			logger.Error("error removing files", "path", newPath, "err", err)
 		}
 		return nil
 	}
@@ -184,7 +183,7 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 	oldPath := filepath.Join(dataDir, fmt.Sprintf("%s.db", dbName))
 
 	if err := os.RemoveAll(oldPath); err != nil {
-		logger.Error("error removing files from %s :%s", oldPath, err)
+		logger.Error("error removing files", "path", oldPath, "err", err)
 	}
 	if err := os.Rename(newPath, oldPath); err != nil {
 		logger.Error("Failed to swap GC DB", "err", err)
