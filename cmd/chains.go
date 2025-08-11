@@ -10,7 +10,7 @@ import (
 type BlockStatePruner func(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64) error
 
 // custom application.db pruner
-type AppPruner func(appStore db.DB, pruneHeight, keepVersions uint64) error
+type AppPruner func(appStore db.DB, pruneHeight uint64) error
 
 // ChainPruner holds the specific pruning functions for a chain.
 type ChainPruner struct {
@@ -18,8 +18,16 @@ type ChainPruner struct {
 	PruneApp        AppPruner
 }
 
-func pruneInjectiveAppStore(appStore db.DB, pruneHeight, keepVersions uint64) error {
+func pruneInjectiveAppStore(appStore db.DB, pruneHeight uint64) error {
 	logger.Info("Running Injective-specific application pruner")
+
+	if err := PruneAppState(appStore, pruneHeight); err != nil {
+		return err
+	}
+
+	if err := pruneAppStore(appStore, pruneHeight); err != nil {
+		return err
+	}
 
 	prefixesToPrune := map[string]int{
 		"s/k:oracle/s": 12,
@@ -49,11 +57,19 @@ func pruneInjectiveAppStore(appStore db.DB, pruneHeight, keepVersions uint64) er
 		logger.Info("Pruned", "store", "application", "key", fmt.Sprintf("%q", prefix), "count", count)
 	}
 
-	return PruneAppState(appStore)
+	return nil
 }
 
-func pruneBabylonAppStore(appStore db.DB, pruneHeight, keepVersions uint64) error {
+func pruneBabylonAppStore(appStore db.DB, pruneHeight uint64) error {
 	logger.Info("Running Babylon-specifi application pruner")
+
+	if err := PruneAppState(appStore, pruneHeight); err != nil {
+		logger.Error("error pruning app state", "error", err)
+	}
+
+	if err := pruneAppStore(appStore, pruneHeight); err != nil {
+		logger.Error("error pruning app store", "error", err)
+	}
 
 	prefixesToPrune := map[string]int{
 		"s/k:finality/f\x01": 15,
@@ -82,11 +98,11 @@ func pruneBabylonAppStore(appStore db.DB, pruneHeight, keepVersions uint64) erro
 		logger.Info("Pruned", "store", "application", "key", fmt.Sprintf("%q", prefix), "count", count)
 	}
 
-	return PruneAppState(appStore)
+	return nil
 }
 
 var chainConfigs = map[string]ChainPruner{
-	"pacific-1":     {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: pruneAppStore},
+	"pacific-1":     {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: PruneAppState},
 	"atlantic-2":    {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: pruneAppStore},
 	"bbn-test-5":    {PruneBlockState: pruneBlockAndStateStore, PruneApp: pruneBabylonAppStore},
 	"bbn-1":         {PruneBlockState: pruneBlockAndStateStore, PruneApp: pruneBabylonAppStore},

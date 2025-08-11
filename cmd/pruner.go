@@ -29,15 +29,7 @@ func setConfig(cfg *log.Config) {
 	cfg.Level = zerolog.InfoLevel
 }
 
-func PruneAppState(appDB db.DB) error {
-
-	defer func() {
-		err := appDB.Close()
-		if err != nil {
-			logger.Error("error (in defer) closing app db", "err", err)
-		}
-	}()
-
+func PruneAppState(appDB db.DB, _ uint64) error {
 	logger.Info("pruning application state")
 
 	appStore := rootmulti.NewStore(appDB, logger, metrics.NewNoOpMetrics())
@@ -243,6 +235,19 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 		}
 	}()
 
+	// before here app state was pruned
+	if pruneApp {
+		logger.Info("Pruning application data")
+		appStoreDB, err = db.NewDB("application", dbfmt, dataDir)
+		if err != nil {
+			return err
+		}
+		if err := pruner.PruneApp(appStoreDB, pruneHeight); err != nil {
+			return fmt.Errorf("failed to prune application DB: %w", err)
+		}
+	}
+
+	// before here app store was pruned
 	if pruneComet {
 		logger.Info("Pruning CometBFT data (blockstore and state)")
 		stateStoreDB, err = db.NewDB("state", dbfmt, dataDir)
@@ -256,17 +261,6 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 
 		if err := pruner.PruneBlockState(blockStoreDB, stateStoreDB, pruneHeight); err != nil {
 			return fmt.Errorf("failed to prune blockstore/state DBs: %w", err)
-		}
-	}
-
-	if pruneApp {
-		logger.Info("Pruning application data")
-		appStoreDB, err = db.NewDB("application", dbfmt, dataDir)
-		if err != nil {
-			return err
-		}
-		if err := pruner.PruneApp(appStoreDB, pruneHeight, keepVersions); err != nil {
-			return fmt.Errorf("failed to prune application DB: %w", err)
 		}
 	}
 

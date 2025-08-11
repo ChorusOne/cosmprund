@@ -110,7 +110,7 @@ func pruneBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint6
 	return SetBlockStoreStateBase(blockStoreDB, pruneHeight+1)
 }
 
-func pruneAppStore(appStore db.DB, pruneHeight uint64, _ uint64) error {
+func pruneAppStore(appStore db.DB, pruneHeight uint64) error {
 	return pruneKeys(
 		appStore, "application", appKeyInfos,
 		func(store db.DB, key string) (uint64, error) {
