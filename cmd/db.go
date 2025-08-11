@@ -60,7 +60,7 @@ func getMagic(path string) ([]byte, error) {
 		return readMagic(filepath.Join(path, name))
 	}
 
-	return nil, fmt.Errorf("No .sst or .ldb files found on %s; cannot infer db format", path)
+	return nil, fmt.Errorf("no .sst or .ldb files found on %s; cannot infer db format", path)
 }
 
 func readMagic(path string) ([]byte, error) {
@@ -68,7 +68,10 @@ func readMagic(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+
+	defer func() {
+		_ = file.Close()
+	}()
 
 	fileInfo, err := file.Stat()
 	if err != nil {
@@ -78,7 +81,7 @@ func readMagic(path string) ([]byte, error) {
 	fileSize := fileInfo.Size()
 
 	if fileSize < 8 {
-		return nil, fmt.Errorf("File is less than 8 bytes in size: %d bytes\n", fileSize)
+		return nil, fmt.Errorf("file is less than 8 bytes in size: %d bytes", fileSize)
 	}
 
 	_, err = file.Seek(-magicLen, io.SeekEnd)
