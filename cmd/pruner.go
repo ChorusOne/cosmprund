@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
-	"slices"
 	"syscall"
 
 	"cosmossdk.io/log"
@@ -30,16 +28,9 @@ var logger log.Logger
 func setConfig(cfg *log.Config) {
 	cfg.Level = zerolog.InfoLevel
 }
-func PruneAppState(dataDir string) error {
-	backend, err := GetFormat(filepath.Join(dataDir, "state.db"))
-	if err != nil {
-		return err
-	}
 
-	appDB, err := db.NewDB("application", backend, dataDir)
-	if err != nil {
-		return err
-	}
+func PruneAppState(appDB db.DB) error {
+
 	defer func() {
 		err := appDB.Close()
 		if err != nil {
@@ -77,7 +68,7 @@ func PruneAppState(dataDir string) error {
 		appStore.MountStoreWithDB(value, types.StoreTypeIAVL, nil)
 	}
 
-	err = appStore.LoadLatestVersion()
+	err := appStore.LoadLatestVersion()
 	if err != nil {
 		return err
 	}
@@ -218,98 +209,120 @@ func ChownR(path string, uid, gid int) error {
 	return errors.Join(errs...)
 }
 
-// PruneCmtData prunes the cometbft blocks and state based on the amount of blocks to keep
-func PruneCmtData(dataDir string) error {
+// Prune is the main entrypoint for the pruning process.
+func Prune(dataDir string, pruneComet, pruneApp bool) error {
+	logger.Info("Starting pruning process...")
 
-	logger.Info("Pruning CMT data")
 	curState, err := DbState(dataDir)
 	if err != nil {
 		return err
 	}
 
+	pruneHeight := uint64(curState.LastBlockHeight) - keepBlocks
+	logger.Info("Initial state", "ChainId", curState.ChainID, "LastBlockHeight", curState.LastBlockHeight)
+	logger.Info("Pruning up to", "targetHeight", pruneHeight)
+
+	pruner := GetPruner(curState.ChainID)
+
 	dbfmt, err := GetFormat(filepath.Join(dataDir, "state.db"))
 	if err != nil {
 		return err
 	}
-	stateStoreDB, err := db.NewDB("state", dbfmt, dataDir)
-	if err != nil {
-		return err
-	}
-	blockStoreDB, err := db.NewDB("blockstore", dbfmt, dataDir)
-	if err != nil {
-		return err
-	}
-	appStoreDB, err := db.NewDB("application", dbfmt, dataDir)
-	if err != nil {
-		return err
+
+	var stateStoreDB, blockStoreDB, appStoreDB db.DB
+
+	defer func() {
+		if stateStoreDB != nil {
+			_ = stateStoreDB.Close()
+		}
+		if blockStoreDB != nil {
+			_ = blockStoreDB.Close()
+		}
+		if appStoreDB != nil {
+			_ = appStoreDB.Close()
+		}
+	}()
+
+	if pruneComet {
+		logger.Info("Pruning CometBFT data (blockstore and state)")
+		stateStoreDB, err = db.NewDB("state", dbfmt, dataDir)
+		if err != nil {
+			return err
+		}
+		blockStoreDB, err = db.NewDB("blockstore", dbfmt, dataDir)
+		if err != nil {
+			return err
+		}
+
+		if err := pruner.PruneBlockState(blockStoreDB, stateStoreDB, pruneHeight); err != nil {
+			return fmt.Errorf("failed to prune blockstore/state DBs: %w", err)
+		}
 	}
 
-	logger.Info("Initial state", "ChainId", curState.ChainID, "LastBlockHeight", curState.LastBlockHeight)
-	pruneHeight := uint64(curState.LastBlockHeight) - keepBlocks
-	logger.Info("Pruning up to", "targetHeight", pruneHeight)
-	isSei := slices.Contains([]string{"pacific-1", "atlantic-2"}, curState.ChainID)
-
-	if !isSei {
-		err = pruneBlockAndStateStore(blockStoreDB, stateStoreDB, appStoreDB, pruneHeight)
-	} else {
-		err = pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB, appStoreDB, pruneHeight)
-	}
-	if err != nil {
-		logger.Error("Failed to prune", "err", err)
-		// gcDB closes the databases, and we can't close pebbledb instances twice
-		_ = blockStoreDB.Close()
-		_ = stateStoreDB.Close()
-		_ = appStoreDB.Close()
-		return err
+	if pruneApp {
+		logger.Info("Pruning application data")
+		appStoreDB, err = db.NewDB("application", dbfmt, dataDir)
+		if err != nil {
+			return err
+		}
+		if err := pruner.PruneApp(appStoreDB, pruneHeight, keepVersions); err != nil {
+			return fmt.Errorf("failed to prune application DB: %w", err)
+		}
 	}
 
 	if runGC {
 		g, _ := errgroup.WithContext(context.Background())
 
-		g.Go(func() error {
-			if err := gcDB(dataDir, "blockstore", blockStoreDB, dbfmt); err != nil {
-				logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
-				return err
-			}
-			return nil
-		})
-
-		g.Go(func() error {
-			if err := gcDB(dataDir, "state", stateStoreDB, dbfmt); err != nil {
-				logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
-				return err
-			}
-			return nil
-		})
-
-		g.Go(func() error {
-			appPath := path.Join(dataDir, "application.db")
-			size, err := dirSize(appPath)
-			if err != nil {
-				logger.Error("Failed to get dir size for app.db, skipping GC", "err", err)
-				return err
-			}
-			if size < THRESHOLD_APP_SIZE || forceCompressApp {
-				logger.Info("Starting application DB GC/compact", "sizeGB", size/GiB, "thresholdGB", THRESHOLD_APP_SIZE/GiB, "forced", forceCompressApp)
-				if err := gcDB(dataDir, "application", appStoreDB, dbfmt); err != nil {
-					logger.Error("Failed to run gcDB", "err", err, "application", appStoreDB, "dbfmt", dbfmt)
+		if pruneComet && blockStoreDB != nil && stateStoreDB != nil {
+			dbToGCOnBlock := blockStoreDB
+			g.Go(func() error {
+				if err := gcDB(dataDir, "blockstore", dbToGCOnBlock, dbfmt); err != nil {
+					logger.Error("Failed to run gcDB on blockstore", "err", err)
 					return err
 				}
-			} else {
-				logger.Info("Skipping application DB GC/compact", "sizeGB", size/GiB, "thresholdGB", THRESHOLD_APP_SIZE/GiB, "forced", forceCompressApp)
-				if err := appStoreDB.Close(); err != nil {
-					logger.Error("error closing app db: %s", err)
-				}
-			}
-			return nil
-		})
+				return nil
+			})
+			blockStoreDB = nil
 
-		return g.Wait()
+			dbToGCOnState := stateStoreDB
+			g.Go(func() error {
+				if err := gcDB(dataDir, "state", dbToGCOnState, dbfmt); err != nil {
+					logger.Error("Failed to run gcDB on state", "err", err)
+					return err
+				}
+				return nil
+			})
+			stateStoreDB = nil
+		}
+
+		if pruneApp && appStoreDB != nil {
+			dbToGCOnApp := appStoreDB
+			g.Go(func() error {
+				appPath := filepath.Join(dataDir, "application.db")
+				size, err := dirSize(appPath)
+				if err != nil {
+					logger.Error("Failed to get dir size for app.db, skipping GC", "err", err)
+					return err
+				}
+				if size < THRESHOLD_APP_SIZE || forceCompressApp {
+					logger.Info("Starting application DB GC/compact", "sizeGB", size/GiB, "thresholdGB", THRESHOLD_APP_SIZE/GiB, "forced", forceCompressApp)
+					if err := gcDB(dataDir, "application", dbToGCOnApp, dbfmt); err != nil {
+						logger.Error("Failed to run gcDB on application", "err", err)
+						return err
+					}
+				} else {
+					logger.Info("Skipping application DB GC/compact due to size", "sizeGB", size/GiB, "thresholdGB", THRESHOLD_APP_SIZE/GiB)
+				}
+				return nil
+			})
+			appStoreDB = nil
+		}
+
+		if err := g.Wait(); err != nil {
+			return fmt.Errorf("GC process failed: %w", err)
+		}
 	} else {
-		logger.Info("NOT running GC on state/block stores")
-		_ = blockStoreDB.Close()
-		_ = stateStoreDB.Close()
-		_ = appStoreDB.Close()
+		logger.Info("Skipping GC pass")
 	}
 
 	return nil

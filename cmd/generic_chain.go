@@ -97,27 +97,26 @@ func pruneStateStore(stateStoreDB db.DB, pruneHeight uint64) error {
 	)
 }
 
-func pruneAppStore(appStore db.DB, pruneHeight uint64) error {
-	return pruneKeys(
-		appStore, "application", appKeyInfos,
-		func(store db.DB, key string) (uint64, error) {
-			return deleteHeightRange(store, key, 0, pruneHeight-1, asciiHeightParser)
-		},
-	)
-}
-
-func pruneBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHeight uint64) error {
+func pruneBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64) error {
 	g, _ := errgroup.WithContext(context.Background())
 
 	g.Go(func() error { return pruneBlockStore(blockStoreDB, pruneHeight) })
 	g.Go(func() error { return pruneStateStore(stateStoreDB, pruneHeight) })
-	g.Go(func() error { return pruneAppStore(appStore, pruneHeight) })
 
 	err := g.Wait()
 	if err != nil {
 		return err
 	}
 	return SetBlockStoreStateBase(blockStoreDB, pruneHeight+1)
+}
+
+func pruneAppStore(appStore db.DB, pruneHeight uint64, _ uint64) error {
+	return pruneKeys(
+		appStore, "application", appKeyInfos,
+		func(store db.DB, key string) (uint64, error) {
+			return deleteHeightRange(store, key, 0, pruneHeight-1, asciiHeightParser)
+		},
+	)
 }
 
 func pruneKeys[T any](

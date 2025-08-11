@@ -18,11 +18,11 @@ make build
 # stop your daemon/cosmovisor
 sudo systemctl stop cosmovisor
 
-# run cosmprund 
+# run cosmprund
 ./build/cosmprund prune ~/.gaiad/data
 ```
 
-Flags: 
+Flags:
 
 ```
 Flags:
@@ -59,7 +59,7 @@ which you can use to get a correct `last_block_height` for your snapshots
 
 ## On speed
 
-If you data directory is large, it will take a while to prune.
+If your data directory is large, it will take a while to prune.
 
 On our tests, a Berachain node with 150GB of data is pruned to ~50MB in ~10 minutes.
 
@@ -67,3 +67,7 @@ On our tests, a Berachain node with 150GB of data is pruned to ~50MB in ~10 minu
 ## On size
 
 Depending on the chain, results will vary; for many chains we see a (compressed) snapshot in the 10~300MB range.
+
+## Custom pruning for application DB
+
+In `cmd/chains.go` you'll find reference implementations for pruning Babylon and Injective. Adding new, custom implementations requires defining a set of chain ID's and a struct which contains two functions: BlockStatePruner (should be similar for chains on the same CometBFT version) and AppPruner (different for each chain).
