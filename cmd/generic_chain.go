@@ -141,7 +141,9 @@ func deleteAllByPrefix(db db.DB, key []byte, cb func([]byte, []byte) (bool, erro
 	copy(rangeEnd, key)
 	rangeEnd[len(rangeEnd)-1]++
 	iter, err := db.Iterator(key, rangeEnd)
-	defer iter.Close()
+	defer func() {
+		_ = iter.Close()
+	}()
 
 	if err != nil {
 		return 0, err
@@ -217,8 +219,8 @@ func deleteHeightRange(db db.DB, key string, startHeight, endHeight uint64, heig
 			continue
 		}
 
-		startKey := []byte(fmt.Sprintf("%s%0*d", key, digits, rangeStart))
-		endKey := []byte(fmt.Sprintf("%s%0*d", key, digits, rangeEnd))
+		startKey := fmt.Appendf(nil, "%s%0*d", key, digits, rangeStart)
+		endKey := fmt.Appendf(nil, "%s%0*d", key, digits, rangeEnd)
 
 		iter, err := db.Iterator(startKey, endKey)
 		if err != nil {
@@ -246,8 +248,8 @@ func deleteHeightRange(db db.DB, key string, startHeight, endHeight uint64, heig
 			pruned++
 			prunedLastBatch++
 			if err := batch.Delete(k); err != nil {
-				iter.Close()
-				batch.Close()
+				_ = iter.Close()
+				_ = batch.Close()
 				return pruned, fmt.Errorf("error deleting key %s: %w", string(k), err)
 			}
 
@@ -261,11 +263,11 @@ func deleteHeightRange(db db.DB, key string, startHeight, endHeight uint64, heig
 		}
 
 		if err := iter.Error(); err != nil {
-			iter.Close()
+			_ = iter.Close()
 			return pruned, fmt.Errorf("iterator error for digit length %d: %w", digits, err)
 		}
 
-		iter.Close()
+		_ = iter.Close()
 		if prunedLastBatch == 0 {
 			break
 		}
@@ -303,11 +305,11 @@ func SetBlockStoreStateBase(db db.DB, base uint64) error {
 	logger.Info("Setting blockstore base", "base", base)
 	bytes, err = proto.Marshal(&bsj)
 	if err != nil {
-		return fmt.Errorf("Failed to marshal bsj: %w", err)
+		return fmt.Errorf("failed to marshal bsj: %w", err)
 	}
 	err = db.Set(blockStoreKey, bytes)
 	if err != nil {
-		return fmt.Errorf("Failed to set blockstore key: %w", err)
+		return fmt.Errorf("failed to set blockstore key: %w", err)
 	}
 	return nil
 }
