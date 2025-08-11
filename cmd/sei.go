@@ -26,7 +26,7 @@ const (
 	prefixExtCommit   = int64(13)
 )
 
-func pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB, appStore db.DB, pruneHeight uint64) error {
+func pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64) error {
 	for _, key := range []int64{prefixBlockMeta, prefixBlockPart, prefixBlockCommit} {
 		prunedEC, err := deleteSeiRange(blockStoreDB, key, 0, int64(pruneHeight))
 		if err != nil {
