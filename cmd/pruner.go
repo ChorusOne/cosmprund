@@ -296,6 +296,7 @@ func ChownR(path string, uid, gid int) error {
 
 	var errs []error
 
+	// TODO: consider using walkdir here
 	err := filepath.Walk(path, func(name string, info os.FileInfo, err error) error {
 		// here, walk errored. return it immediately
 		if err != nil {
