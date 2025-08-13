@@ -9,9 +9,14 @@ import (
 	"syscall"
 
 	"cosmossdk.io/log"
+	"cosmossdk.io/store"
 	"cosmossdk.io/store/metrics"
+	"cosmossdk.io/store/snapshots"
 	"cosmossdk.io/store/types"
+	storetypes "cosmossdk.io/store/types"
 	"golang.org/x/sync/errgroup"
+
+	snapshottypes "cosmossdk.io/store/snapshots/types"
 
 	db "github.com/cosmos/cosmos-db"
 	"github.com/rs/zerolog"
@@ -21,7 +26,7 @@ import (
 )
 
 const GiB uint64 = 1073741824 // 2**30
-const THRESHOLD_APP_SIZE uint64 = 10 * GiB
+const appSizeThreshold uint64 = 10 * GiB
 
 var logger log.Logger
 
@@ -29,7 +34,7 @@ func setConfig(cfg *log.Config) {
 	cfg.Level = zerolog.InfoLevel
 }
 
-func PruneAppState(appDB db.DB, _ uint64) error {
+func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _ uint64) error {
 	logger.Info("pruning application state")
 
 	appStore := rootmulti.NewStore(appDB, logger, metrics.NewNoOpMetrics())
@@ -84,6 +89,115 @@ func PruneAppState(appDB db.DB, _ uint64) error {
 		}
 	}
 
+	return nil
+}
+
+// this essentially "statesyncs" the application db
+func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string, dbfmt db.BackendType, pruneHeight uint64) error {
+	appPath := filepath.Join(dataDir, "application.db")
+	size, err := dirSize(appPath)
+	if err != nil {
+		logger.Error("cannot calculate app path, bailing")
+		return err
+	}
+
+	if size < appSizeThreshold {
+		logger.Error("size of application database is too small for snapshot restore", "size", size/GiB, "threshold", appSizeThreshold/GiB)
+		return nil
+	}
+	logger.Info("pruning application state via snapshot", "pruneHeight", pruneHeight)
+
+	appStore := rootmulti.NewStore(appDB, logger, metrics.NewNoOpMetrics())
+	appStore.SetIAVLDisableFastNode(true)
+
+	ver := rootmulti.GetLatestVersion(appDB)
+	logger.Info("latest version", "latest", ver)
+
+	if ver == 0 {
+		logger.Info("no versions to prune")
+		return nil
+	}
+
+	cInfo, err := appStore.GetCommitInfo(ver)
+	if err != nil {
+		return fmt.Errorf("failed to get commit info: %w", err)
+	}
+
+	storeNames := []string{}
+	for _, storeInfo := range cInfo.StoreInfos {
+		if len(storeInfo.CommitId.Hash) > 0 {
+			storeNames = append(storeNames, storeInfo.Name)
+			logger.Info("including store", "store", storeInfo.Name)
+		} else {
+			logger.Info("skipping due to empty hash", "store", storeInfo.Name)
+		}
+	}
+
+	keys := storetypes.NewKVStoreKeys(storeNames...)
+	for _, key := range keys {
+		appStore.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
+	}
+
+	targetVersion := uint64(ver)
+
+	logger.Info("loading version for snapshot", "version", targetVersion)
+	if err := appStore.LoadVersion(int64(targetVersion)); err != nil {
+		return fmt.Errorf("failed to load version %d: %w", targetVersion, err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "cosmprund-snapshot-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+
+	defer func() {
+		err := os.RemoveAll(tmpDir)
+		if err != nil {
+			logger.Error("error (in defer) removing tmpDir", "err", err)
+		}
+	}()
+
+	snapshotStore, err := snapshots.NewStore(snapshotDB, tmpDir)
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot store: %w", err)
+	}
+
+	opts := snapshottypes.NewSnapshotOptions(1500, 2)
+	snapshotManager := snapshots.NewManager(snapshotStore, opts, appStore, nil, logger)
+
+	logger.Info("creating snapshot", "height", targetVersion)
+	snapshot, err := snapshotManager.Create(targetVersion)
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot: %w", err)
+	}
+	logger.Info("snapshot created, removing old application.db")
+
+	_ = appDB.Close()
+	if err := os.RemoveAll(filepath.Join(dataDir, "application.db")); err != nil {
+		return fmt.Errorf("failed to remove application.db: %w", err)
+	}
+	appDB, err = db.NewDB("application", dbfmt, dataDir)
+	if err != nil {
+		return fmt.Errorf("failed to recreate application DB: %w", err)
+	}
+
+	freshStore := store.NewCommitMultiStore(appDB, logger, metrics.NewNoOpMetrics())
+	freshStore.SetIAVLDisableFastNode(true)
+	for _, key := range keys {
+		freshStore.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
+	}
+
+	if err := freshStore.LoadLatestVersion(); err != nil {
+		return fmt.Errorf("failed to load fresh store: %w", err)
+	}
+	snapshotManager = snapshots.NewManager(snapshotStore, opts, freshStore, nil, logger)
+
+	logger.Info("proceeding with snapshot restore")
+	if err := snapshotManager.RestoreLocalSnapshot(snapshot.Height, snapshot.Format); err != nil {
+		return fmt.Errorf("failed to restore local snapshot: %w", err)
+	}
+
+	logger.Info("snapshot sucessfully restored", "height")
 	return nil
 }
 
@@ -242,7 +356,11 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 		if err != nil {
 			return err
 		}
-		if err := pruner.PruneApp(appStoreDB, pruneHeight); err != nil {
+		snapshotDB, err := db.NewDB("snapshots/metadata", dbfmt, dataDir)
+		if err != nil {
+			return err
+		}
+		if err := pruner.PruneApp(appStoreDB, snapshotDB, dataDir, dbfmt, pruneHeight); err != nil {
 			return fmt.Errorf("failed to prune application DB: %w", err)
 		}
 	}
@@ -298,14 +416,14 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 					logger.Error("Failed to get dir size for app.db, skipping GC", "err", err)
 					return err
 				}
-				if size < THRESHOLD_APP_SIZE || forceCompressApp {
-					logger.Info("Starting application DB GC/compact", "sizeGB", size/GiB, "thresholdGB", THRESHOLD_APP_SIZE/GiB, "forced", forceCompressApp)
+				if size < appSizeThreshold || forceCompressApp {
+					logger.Info("Starting application DB GC/compact", "sizeGB", size/GiB, "thresholdGB", appSizeThreshold/GiB, "forced", forceCompressApp)
 					if err := gcDB(dataDir, "application", dbToGCOnApp, dbfmt); err != nil {
 						logger.Error("Failed to run gcDB on application", "err", err)
 						return err
 					}
 				} else {
-					logger.Info("Skipping application DB GC/compact due to size", "sizeGB", size/GiB, "thresholdGB", THRESHOLD_APP_SIZE/GiB)
+					logger.Info("Skipping application DB GC/compact due to size", "sizeGB", size/GiB, "thresholdGB", appSizeThreshold/GiB)
 				}
 				return nil
 			})
