@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	cmtstate "github.com/cometbft/cometbft/api/cometbft/state/v1"
 	cmtstore "github.com/cometbft/cometbft/api/cometbft/store/v1"
 
 	"github.com/binaryholdings/cosmos-pruner/cmd/celestia"
@@ -89,15 +90,11 @@ func pruneBlockStore(blockStoreDB db.DB, pruneHeight uint64) error {
 }
 
 func pruneStateStore(stateStoreDB db.DB, pruneHeight uint64) error {
-
-	if pruneHeight > 1500 {
-		logger.Info("pruning validatorsKey")
-		count, err := deleteHeightRange(stateStoreDB, "validatorsKey:", 0, pruneHeight-1500, asciiHeightParser)
-		if err != nil {
-			return err
-		}
-		logger.Info("pruned validatorsKey", "count", count)
+	const validatorHistoryToKeep = 500_000
+	if err := pruneValidatorHistory(stateStoreDB, validatorHistoryToKeep); err != nil {
+		logger.Error("validator history pruning failed", "err", err)
 	}
+
 	return pruneKeys(
 		stateStoreDB, "state", stateKeyInfos,
 		func(store db.DB, key string) (uint64, error) {
@@ -106,6 +103,88 @@ func pruneStateStore(stateStoreDB db.DB, pruneHeight uint64) error {
 	)
 }
 
+func pruneValidatorHistory(stateStoreDB db.DB, validatorHistoryToKeep uint64) error {
+	latestValHeight, err := findLatestValidatorHeight(stateStoreDB)
+	if err != nil {
+		return fmt.Errorf("could not determine latest validator height: %w", err)
+	}
+
+	if latestValHeight <= validatorHistoryToKeep {
+		logger.Info("not enough history to perform validatorKey pruning")
+		return nil
+	}
+
+	retainHeight := latestValHeight - validatorHistoryToKeep
+	anchorHeight, err := findAnchorCheckpoint(stateStoreDB, retainHeight)
+	if err != nil {
+		return fmt.Errorf("could not find safe anchor checkpoint: %w", err)
+	}
+
+	validatorPruneCutoff := anchorHeight - 1
+	if validatorPruneCutoff == 0 {
+		logger.Info("no old validator keys to prune")
+		return nil
+	}
+
+	logger.Info("pruning validatorsKey", "cutoffHeight", validatorPruneCutoff)
+	count, err := deleteHeightRange(stateStoreDB, "validatorsKey:", 0, validatorPruneCutoff, asciiHeightParser)
+	if err != nil {
+		return fmt.Errorf("failed to prune validatorsKey: %w", err)
+	}
+
+	logger.Info("pruned validatorsKey", "count", count)
+	return nil
+}
+
+func findLatestValidatorHeight(db db.DB) (uint64, error) {
+	prefix := []byte("validatorsKey:")
+	endPrefix := make([]byte, len(prefix))
+	copy(endPrefix, prefix)
+	endPrefix[len(endPrefix)-1]++
+
+	iter, err := db.ReverseIterator(prefix, endPrefix)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = iter.Close()
+	}()
+
+	if !iter.Valid() {
+		if err := iter.Error(); err != nil {
+			return 0, err
+		}
+		return 0, fmt.Errorf("no validator keys found")
+	}
+
+	key := iter.Key()
+	keyStr := string(key)
+	heightStr := strings.TrimPrefix(keyStr, "validatorsKey:")
+	return strconv.ParseUint(heightStr, 10, 64)
+}
+
+// findAnchorCheckpoint searches backwards from retainHeight to find a height that has complete validator set data
+// in validatorsKey there are two types of values: a validator set, and a value saying that the complete validator set for this height is unchanged, and points to some other key.
+func findAnchorCheckpoint(db db.DB, retainHeight uint64) (uint64, error) {
+	for h := retainHeight; h > 0; h-- {
+		key := fmt.Appendf(nil, "validatorsKey:%d", h)
+		value, err := db.Get(key)
+		if err != nil {
+			continue
+		}
+
+		valInfo := new(cmtstate.ValidatorsInfo)
+		if err := proto.Unmarshal(value, valInfo); err != nil {
+			continue
+		}
+
+		if valInfo.ValidatorSet != nil {
+			logger.Info("found anchor checkpoint", "height", h)
+			return h, nil
+		}
+	}
+	return 0, fmt.Errorf("could not find any anchor checkpoint at or before height %d", retainHeight)
+}
 func pruneBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64) error {
 	g, _ := errgroup.WithContext(context.Background())
 
@@ -117,15 +196,6 @@ func pruneBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint6
 		return err
 	}
 	return SetBlockStoreStateBase(blockStoreDB, pruneHeight+1)
-}
-
-func pruneAppStore(appStore db.DB, pruneHeight uint64) error {
-	return pruneKeys(
-		appStore, "application", appKeyInfos,
-		func(store db.DB, key string) (uint64, error) {
-			return deleteHeightRange(store, key, 0, pruneHeight-1, asciiHeightParser)
-		},
-	)
 }
 
 func pruneKeys[T any](
