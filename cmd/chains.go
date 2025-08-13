@@ -36,6 +36,6 @@ func GetPruner(chainID string) ChainPruner {
 	logger.Info("Using default pruning configuration")
 	return ChainPruner{
 		PruneBlockState: pruneBlockAndStateStore,
-		PruneApp:        SnapshotAndRestoreApp,
+		PruneApp:        PruneAppState,
 	}
 }
