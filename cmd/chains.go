@@ -25,6 +25,7 @@ var chainConfigs = map[string]ChainPruner{
 	"injective-1":   {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp},
 	"injective-888": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp},
 	"cosmoshub-4":   {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp},
+	"osmosis-1":     {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp},
 }
 
 func GetPruner(chainID string) ChainPruner {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 
 	"cosmossdk.io/log"
@@ -349,7 +350,9 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 		}
 	}()
 
-	// before here app state was pruned
+	var wg sync.WaitGroup
+	errorChan := make(chan error, 2)
+
 	if pruneApp {
 		logger.Info("Pruning application data")
 		appStoreDB, err = db.NewDB("application", dbfmt, dataDir)
@@ -360,12 +363,15 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 		if err != nil {
 			return err
 		}
-		if err := pruner.PruneApp(appStoreDB, snapshotDB, dataDir, dbfmt, pruneHeight); err != nil {
-			return fmt.Errorf("failed to prune application DB: %w", err)
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := pruner.PruneApp(appStoreDB, snapshotDB, dataDir, dbfmt, pruneHeight); err != nil {
+				errorChan <- fmt.Errorf("failed to prune application DB: %w", err)
+			}
+		}()
 	}
 
-	// before here app store was pruned
 	if pruneComet {
 		logger.Info("Pruning CometBFT data (blockstore and state)")
 		stateStoreDB, err = db.NewDB("state", dbfmt, dataDir)
@@ -376,10 +382,27 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 		if err != nil {
 			return err
 		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := pruner.PruneBlockState(blockStoreDB, stateStoreDB, pruneHeight); err != nil {
+				errorChan <- fmt.Errorf("failed to prune blockstore/state DBs: %w", err)
+			}
+		}()
+	}
 
-		if err := pruner.PruneBlockState(blockStoreDB, stateStoreDB, pruneHeight); err != nil {
-			return fmt.Errorf("failed to prune blockstore/state DBs: %w", err)
-		}
+	go func() {
+		wg.Wait()
+		close(errorChan)
+	}()
+
+	var errs []error
+	for err := range errorChan {
+		errs = append(errs, err)
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 
 	if runGC {
