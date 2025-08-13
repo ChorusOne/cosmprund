@@ -89,6 +89,7 @@ func pruneBlockStore(blockStoreDB db.DB, pruneHeight uint64) error {
 	return nil
 }
 
+// TODO: find out if we can go harder here
 func pruneStateStore(stateStoreDB db.DB, pruneHeight uint64) error {
 	const validatorHistoryToKeep = 500_000
 	if err := pruneValidatorHistory(stateStoreDB, validatorHistoryToKeep); err != nil {
