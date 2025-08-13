@@ -89,6 +89,15 @@ func pruneBlockStore(blockStoreDB db.DB, pruneHeight uint64) error {
 }
 
 func pruneStateStore(stateStoreDB db.DB, pruneHeight uint64) error {
+
+	if pruneHeight > 1500 {
+		logger.Info("pruning validatorsKey")
+		count, err := deleteHeightRange(stateStoreDB, "validatorsKey:", 0, pruneHeight-1500, asciiHeightParser)
+		if err != nil {
+			return err
+		}
+		logger.Info("pruned validatorsKey", "count", count)
+	}
 	return pruneKeys(
 		stateStoreDB, "state", stateKeyInfos,
 		func(store db.DB, key string) (uint64, error) {
