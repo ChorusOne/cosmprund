@@ -1,16 +1,13 @@
 package cmd
 
 import (
-	"encoding/binary"
-	"fmt"
-
 	db "github.com/cosmos/cosmos-db"
 )
 
 type BlockStatePruner func(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64) error
 
 // custom application.db pruner
-type AppPruner func(appStore db.DB, pruneHeight uint64) error
+type AppPruner func(appStore db.DB, snapshotDB db.DB, dataDir string, dbfmt db.BackendType, pruneHeight uint64) error
 
 // ChainPruner holds the specific pruning functions for a chain.
 type ChainPruner struct {
@@ -18,96 +15,16 @@ type ChainPruner struct {
 	PruneApp        AppPruner
 }
 
-func pruneInjectiveAppStore(appStore db.DB, pruneHeight uint64) error {
-	logger.Info("Running Injective-specific application pruner")
-
-	if err := PruneAppState(appStore, pruneHeight); err != nil {
-		return err
-	}
-
-	if err := pruneAppStore(appStore, pruneHeight); err != nil {
-		return err
-	}
-
-	prefixesToPrune := map[string]int{
-		"s/k:oracle/s": 12,
-		"s/k:wasm/s":   10,
-		"s/k:ibc/s":    9,
-		"s/k:bank/s":   10,
-		"s/k:peggy/s":  11,
-		"s/k:acc/s":    9,
-	}
-
-	for p, prefixLen := range prefixesToPrune {
-		prefix := []byte(p)
-		currentPrefixLen := prefixLen
-
-		count, err := deleteAllByPrefix(appStore, prefix, func(key, value []byte) (bool, error) {
-			if len(key) < currentPrefixLen+8 {
-				return false, nil
-			}
-			heightBytes := key[currentPrefixLen : currentPrefixLen+8]
-			height := binary.BigEndian.Uint64(heightBytes)
-			return height < pruneHeight, nil
-		})
-
-		if err != nil {
-			return fmt.Errorf("prune injective app store prefix %q: %w", string(prefix), err)
-		}
-		logger.Info("Pruned", "store", "application", "key", fmt.Sprintf("%q", prefix), "count", count)
-	}
-
-	return nil
-}
-
-func pruneBabylonAppStore(appStore db.DB, pruneHeight uint64) error {
-	logger.Info("Running Babylon-specifi application pruner")
-
-	if err := PruneAppState(appStore, pruneHeight); err != nil {
-		logger.Error("error pruning app state", "error", err)
-	}
-
-	if err := pruneAppStore(appStore, pruneHeight); err != nil {
-		logger.Error("error pruning app store", "error", err)
-	}
-
-	prefixesToPrune := map[string]int{
-		"s/k:finality/f\x01": 15,
-		"s/k:finality/f\x02": 15,
-		"s/k:finality/f\x03": 15,
-		"s/k:finality/s\x00": 15,
-		"s/k:btcstaking/s":   16,
-	}
-
-	for p, prefixLen := range prefixesToPrune {
-		prefix := []byte(p)
-		currentPrefixLen := prefixLen
-
-		count, err := deleteAllByPrefix(appStore, prefix, func(key, value []byte) (bool, error) {
-			if len(key) < currentPrefixLen+8 {
-				return false, nil
-			}
-			heightBytes := key[currentPrefixLen : currentPrefixLen+8]
-			height := binary.BigEndian.Uint64(heightBytes)
-			return height < pruneHeight, nil
-		})
-
-		if err != nil {
-			return fmt.Errorf("prune babylon app store prefix %q: %w", string(prefix), err)
-		}
-		logger.Info("Pruned", "store", "application", "key", fmt.Sprintf("%q", prefix), "count", count)
-	}
-
-	return nil
-}
-
+// some chains, e.g Babylon, see very little benefit from using the snapshot restore method.
+// TODO: evaluate whether or not adding custom thresholds here makes sense. Currently it's 10 GiB.
 var chainConfigs = map[string]ChainPruner{
 	"pacific-1":     {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: PruneAppState},
-	"atlantic-2":    {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: pruneAppStore},
-	"bbn-test-5":    {PruneBlockState: pruneBlockAndStateStore, PruneApp: pruneBabylonAppStore},
-	"bbn-1":         {PruneBlockState: pruneBlockAndStateStore, PruneApp: pruneBabylonAppStore},
-	"injective-1":   {PruneBlockState: pruneBlockAndStateStore, PruneApp: pruneInjectiveAppStore},
-	"injective-888": {PruneBlockState: pruneBlockAndStateStore, PruneApp: pruneInjectiveAppStore},
+	"atlantic-2":    {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: PruneAppState},
+	"bbn-test-5":    {PruneBlockState: pruneBlockAndStateStore, PruneApp: PruneAppState},
+	"bbn-1":         {PruneBlockState: pruneBlockAndStateStore, PruneApp: PruneAppState},
+	"injective-1":   {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp},
+	"injective-888": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp},
+	"cosmoshub-4":   {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp},
 }
 
 func GetPruner(chainID string) ChainPruner {
@@ -118,6 +35,6 @@ func GetPruner(chainID string) ChainPruner {
 	logger.Info("Using default pruning configuration")
 	return ChainPruner{
 		PruneBlockState: pruneBlockAndStateStore,
-		PruneApp:        pruneAppStore,
+		PruneApp:        SnapshotAndRestoreApp,
 	}
 }
