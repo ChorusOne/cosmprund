@@ -47,11 +47,9 @@ func NewRootCmd() *cobra.Command {
 			}
 
 			defer func() {
-				for _, db := range []string{"state.db", "blockstore.db", "application.db"} {
-					err = ChownR(path.Join(dataDir, db), uid, gid)
-					if err != nil {
-						logger.Error("Failed to run chown, continuing", "err", err)
-					}
+				err = ChownR(dataDir, uid, gid)
+				if err != nil {
+					logger.Error("Failed to run chown, continuing", "err", err)
 				}
 			}()
 
