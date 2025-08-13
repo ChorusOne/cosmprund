@@ -70,4 +70,4 @@ Depending on the chain, results will vary; for many chains we see a (compressed)
 
 ## Custom pruning for application DB
 
-In `cmd/chains.go` you'll find reference implementations for pruning Babylon and Injective. Adding new, custom implementations requires defining a set of chain ID's and a struct which contains two functions: BlockStatePruner (should be similar for chains on the same CometBFT version) and AppPruner (different for each chain).
+In `cmd/chains.go` you'll find mappings of chain_id <-> pruning function. Adding new, custom implementations requires defining a set of chain ID's and a struct which contains two functions: BlockStatePruner (should be similar for chains on the same CometBFT version) and AppPruner (different for each chain).
