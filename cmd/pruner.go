@@ -35,7 +35,7 @@ func setConfig(cfg *log.Config) {
 	cfg.Level = zerolog.InfoLevel
 }
 
-func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _ uint64) error {
+func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _, _ uint64) error {
 	logger.Info("pruning application state")
 
 	appStore := rootmulti.NewStore(appDB, logger, metrics.NewNoOpMetrics())
@@ -94,7 +94,7 @@ func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _ uint64) e
 }
 
 // this essentially "statesyncs" the application db
-func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string, dbfmt db.BackendType, pruneHeight uint64) error {
+func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string, dbfmt db.BackendType, pruneHeight, snapshotRestoreThreshold uint64) error {
 	appPath := filepath.Join(dataDir, "application.db")
 	size, err := dirSize(appPath)
 	if err != nil {
@@ -102,8 +102,8 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string, dbfmt 
 		return err
 	}
 
-	if size < appSizeThreshold {
-		logger.Error("size of application database is too small for snapshot restore", "size", size/GiB, "threshold", appSizeThreshold/GiB)
+	if size < snapshotRestoreThreshold {
+		logger.Error("size of application database is too small for snapshot restore", "size", size/GiB, "threshold", snapshotRestoreThreshold/GiB)
 		return nil
 	}
 	logger.Info("pruning application state via snapshot", "pruneHeight", pruneHeight)
@@ -366,7 +366,7 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := pruner.PruneApp(appStoreDB, snapshotDB, dataDir, dbfmt, pruneHeight); err != nil {
+			if err := pruner.PruneApp(appStoreDB, snapshotDB, dataDir, dbfmt, pruneHeight, pruner.SnapshotRestoreThreshold); err != nil {
 				errorChan <- fmt.Errorf("failed to prune application DB: %w", err)
 			}
 		}()
