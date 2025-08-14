@@ -20,15 +20,17 @@ type ChainPruner struct {
 // some chains, e.g Babylon, see very little benefit from using the snapshot restore method.
 // TODO: see if custom implementation for Babylon makes sense.
 var chainConfigs = map[string]ChainPruner{
-	"pacific-1":     {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: PruneAppState},
-	"atlantic-2":    {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: PruneAppState},
-	"bbn-test-5":    {PruneBlockState: pruneBlockAndStateStore, PruneApp: PruneAppState},
-	"bbn-1":         {PruneBlockState: pruneBlockAndStateStore, PruneApp: PruneAppState},
-	"injective-1":   {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
-	"injective-888": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
-	"stride-1":      {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
-	"cosmoshub-4":   {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 20 * GiB},
-	"osmosis-1":     {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 30 * GiB},
+	"pacific-1":      {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: PruneAppState},
+	"atlantic-2":     {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: PruneAppState},
+	"bbn-test-5":     {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
+	"bbn-1":          {PruneBlockState: pruneBlockAndStateStore, PruneApp: PruneAppState},
+	"injective-1":    {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
+	"injective-888":  {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
+	"stride-1":       {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
+	"cosmoshub-4":    {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 20 * GiB},
+	"osmosis-1":      {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 30 * GiB},
+	"dydx-testnet-4": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
+	"axelar-dojo-1":  {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
 }
 
 func GetPruner(chainID string) ChainPruner {
