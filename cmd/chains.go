@@ -22,8 +22,6 @@ type ChainPruner struct {
 var chainConfigs = map[string]ChainPruner{
 	"pacific-1":      {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: PruneAppState},
 	"atlantic-2":     {PruneBlockState: pruneSeiBlockAndStateStore, PruneApp: PruneAppState},
-	"bbn-test-5":     {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
-	"bbn-1":          {PruneBlockState: pruneBlockAndStateStore, PruneApp: PruneAppState},
 	"injective-1":    {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
 	"injective-888":  {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
 	"stride-1":       {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
