@@ -29,7 +29,8 @@ var chainConfigs = map[string]ChainPruner{
 	"stride-1":       {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
 	"cosmoshub-4":    {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 20 * GiB},
 	"osmosis-1":      {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 30 * GiB},
-	"dydx-testnet-4": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
+	"dydx-testnet-4": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 1 * GiB},
+	"dydx-mainnet-1": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 1 * GiB},
 	"axelar-dojo-1":  {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
 }
 
