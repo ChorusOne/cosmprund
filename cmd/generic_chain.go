@@ -196,7 +196,9 @@ func pruneBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint6
 	if err != nil {
 		return err
 	}
-	return SetBlockStoreStateBase(blockStoreDB, pruneHeight+1)
+	err = SetBlockStoreStateBase(blockStoreDB, pruneHeight+1)
+	logger.Info("Finished pruning block and state stores")
+	return err
 }
 
 func pruneKeys[T any](
