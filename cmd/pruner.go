@@ -35,7 +35,7 @@ func setConfig(cfg *log.Config) {
 	cfg.Level = zerolog.InfoLevel
 }
 
-func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _, _ uint64) error {
+func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _, _ uint64) (bool, error) {
 	logger.Info("pruning application state")
 
 	appStore := rootmulti.NewStore(appDB, logger, metrics.NewNoOpMetrics())
@@ -46,7 +46,7 @@ func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _, _ uint64
 	if ver != 0 {
 		cInfo, err := appStore.GetCommitInfo(ver)
 		if err != nil {
-			return err
+			return false, err
 		}
 
 		for _, storeInfo := range cInfo.StoreInfos {
@@ -68,7 +68,7 @@ func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _, _ uint64
 
 	err := appStore.LoadLatestVersion()
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	versions := appStore.GetAllVersions()
@@ -90,7 +90,7 @@ func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _, _ uint64
 		}
 	}
 
-	return nil
+	return false, nil
 }
 
 // this essentially "statesyncs" the application db
