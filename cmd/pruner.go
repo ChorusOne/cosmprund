@@ -94,17 +94,18 @@ func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _, _ uint64
 }
 
 // this essentially "statesyncs" the application db
-func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string, dbfmt db.BackendType, pruneHeight, snapshotRestoreThreshold uint64) error {
+func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string,
+	dbfmt db.BackendType, pruneHeight, snapshotRestoreThreshold uint64) (bool, error) {
 	appPath := filepath.Join(dataDir, "application.db")
 	size, err := dirSize(appPath)
 	if err != nil {
 		logger.Error("cannot calculate app path, bailing")
-		return err
+		return false, err
 	}
 
 	if size < snapshotRestoreThreshold {
-		logger.Error("size of application database is too small for snapshot restore", "size", size/GiB, "threshold", snapshotRestoreThreshold/GiB)
-		return nil
+		logger.Warn("size of application database is too small for snapshot restore", "size", size/GiB, "threshold", snapshotRestoreThreshold/GiB)
+		return false, nil
 	}
 	logger.Info("pruning application state via snapshot", "pruneHeight", pruneHeight)
 
@@ -116,12 +117,12 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string, dbfmt 
 
 	if ver == 0 {
 		logger.Info("no versions to prune")
-		return nil
+		return false, nil
 	}
 
 	cInfo, err := appStore.GetCommitInfo(ver)
 	if err != nil {
-		return fmt.Errorf("failed to get commit info: %w", err)
+		return false, fmt.Errorf("failed to get commit info: %w", err)
 	}
 
 	storeNames := []string{}
@@ -143,12 +144,12 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string, dbfmt 
 
 	logger.Info("loading version for snapshot", "version", targetVersion)
 	if err := appStore.LoadVersion(int64(targetVersion)); err != nil {
-		return fmt.Errorf("failed to load version %d: %w", targetVersion, err)
+		return false, fmt.Errorf("failed to load version %d: %w", targetVersion, err)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "cosmprund-snapshot-*")
 	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
+		return false, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
 	defer func() {
@@ -160,26 +161,31 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string, dbfmt 
 
 	snapshotStore, err := snapshots.NewStore(snapshotDB, tmpDir)
 	if err != nil {
-		return fmt.Errorf("failed to create snapshot store: %w", err)
+		return false, fmt.Errorf("failed to create snapshot store: %w", err)
 	}
 
-	opts := snapshottypes.NewSnapshotOptions(1500, 2)
+	// this is a one-shot snapshot so the options shouldn't matter
+	opts := snapshottypes.SnapshotOptions{
+		Interval:   1,
+		KeepRecent: 1,
+	}
+
 	snapshotManager := snapshots.NewManager(snapshotStore, opts, appStore, nil, logger)
 
 	logger.Info("creating snapshot", "height", targetVersion)
 	snapshot, err := snapshotManager.Create(targetVersion)
 	if err != nil {
-		return fmt.Errorf("failed to create snapshot: %w", err)
+		return false, fmt.Errorf("failed to create snapshot: %w", err)
 	}
 	logger.Info("snapshot created, removing old application.db")
 
 	_ = appDB.Close()
 	if err := os.RemoveAll(filepath.Join(dataDir, "application.db")); err != nil {
-		return fmt.Errorf("failed to remove application.db: %w", err)
+		return false, fmt.Errorf("failed to remove application.db: %w", err)
 	}
 	appDB, err = db.NewDB("application", dbfmt, dataDir)
 	if err != nil {
-		return fmt.Errorf("failed to recreate application DB: %w", err)
+		return false, fmt.Errorf("failed to recreate application DB: %w", err)
 	}
 
 	freshStore := store.NewCommitMultiStore(appDB, logger, metrics.NewNoOpMetrics())
@@ -189,17 +195,26 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string, dbfmt 
 	}
 
 	if err := freshStore.LoadLatestVersion(); err != nil {
-		return fmt.Errorf("failed to load fresh store: %w", err)
+		return false, fmt.Errorf("failed to load fresh store: %w", err)
 	}
 	snapshotManager = snapshots.NewManager(snapshotStore, opts, freshStore, nil, logger)
 
-	logger.Info("proceeding with snapshot restore")
-	if err := snapshotManager.RestoreLocalSnapshot(snapshot.Height, snapshot.Format); err != nil {
-		return fmt.Errorf("failed to restore local snapshot: %w", err)
+	snapSize, err := dirSize(tmpDir)
+	if err != nil {
+		logger.Error("cannot calculate snapshot size")
 	}
 
-	logger.Info("snapshot sucessfully restored", "height")
-	return nil
+	logger.Info("proceeding with snapshot restore", "size", snapSize/GiB)
+	if err := snapshotManager.RestoreLocalSnapshot(snapshot.Height, snapshot.Format); err != nil {
+		return false, fmt.Errorf("failed to restore local snapshot: %w", err)
+	}
+
+	newAppSize, err := dirSize(appPath)
+	if err != nil {
+		logger.Error("cannot calculate snapshot size")
+	}
+	logger.Info("snapshot sucessfully restored", "height", snapshot.Height, "appSize", newAppSize/GiB)
+	return true, nil
 }
 
 // Implement a "GC" pass by copying only live data to a new DB
@@ -354,6 +369,7 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 	var wg sync.WaitGroup
 	errorChan := make(chan error, 2)
 
+	snapshotted := false
 	if pruneApp {
 		logger.Info("Pruning application data")
 		appStoreDB, err = db.NewDB("application", dbfmt, dataDir)
@@ -367,7 +383,8 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := pruner.PruneApp(appStoreDB, snapshotDB, dataDir, dbfmt, pruneHeight, pruner.SnapshotRestoreThreshold); err != nil {
+			snapshotted, err = pruner.PruneApp(appStoreDB, snapshotDB, dataDir, dbfmt, pruneHeight, pruner.SnapshotRestoreThreshold)
+			if err != nil {
 				errorChan <- fmt.Errorf("failed to prune application DB: %w", err)
 			}
 		}()
@@ -440,7 +457,7 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 					logger.Error("Failed to get dir size for app.db, skipping GC", "err", err)
 					return err
 				}
-				if size < appSizeThreshold || forceCompressApp {
+				if (size < appSizeThreshold || forceCompressApp) && !snapshotted {
 					logger.Info("Starting application DB GC/compact", "sizeGB", size/GiB, "thresholdGB", appSizeThreshold/GiB, "forced", forceCompressApp)
 					if err := gcDB(dataDir, "application", dbToGCOnApp, dbfmt); err != nil {
 						logger.Error("Failed to run gcDB on application", "err", err)
