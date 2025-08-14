@@ -464,7 +464,7 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 						return err
 					}
 				} else {
-					logger.Info("Skipping application DB GC/compact due to size", "sizeGB", size/GiB, "thresholdGB", appSizeThreshold/GiB)
+					logger.Info("Skipping application DB compaction", "sizeGB", size/GiB, "thresholdGB", appSizeThreshold/GiB, "snapshotted", snapshotted)
 				}
 				return nil
 			})
