@@ -211,7 +211,7 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string,
 
 	newAppSize, err := dirSize(appPath)
 	if err != nil {
-		logger.Error("cannot calculate snapshot size")
+		logger.Error("cannot calculate new application db size")
 	}
 	logger.Info("snapshot sucessfully restored", "height", snapshot.Height, "appSize", newAppSize/GiB)
 	return true, nil
