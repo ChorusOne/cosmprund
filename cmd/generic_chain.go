@@ -91,7 +91,7 @@ func pruneBlockStore(blockStoreDB db.DB, pruneHeight uint64) error {
 
 // TODO: find out if we can go harder here
 func pruneStateStore(stateStoreDB db.DB, pruneHeight uint64) error {
-	const validatorHistoryToKeep = 500_000
+	const validatorHistoryToKeep = 1_000
 	if err := pruneValidatorHistory(stateStoreDB, validatorHistoryToKeep); err != nil {
 		logger.Error("validator history pruning failed", "err", err)
 	}
@@ -116,12 +116,13 @@ func pruneValidatorHistory(stateStoreDB db.DB, validatorHistoryToKeep uint64) er
 	}
 
 	retainHeight := latestValHeight - validatorHistoryToKeep
-	anchorHeight, err := findAnchorCheckpoint(stateStoreDB, retainHeight)
-	if err != nil {
-		return fmt.Errorf("could not find safe anchor checkpoint: %w", err)
+	anchorHeight := findAnchorCheckpoint(stateStoreDB, retainHeight)
+	if anchorHeight == nil {
+		logger.Info("could not find safe anchor checkpoint: %w", err)
+		return nil
 	}
 
-	validatorPruneCutoff := anchorHeight - 1
+	validatorPruneCutoff := *anchorHeight - 1
 	if validatorPruneCutoff == 0 {
 		logger.Info("no old validator keys to prune")
 		return nil
@@ -166,7 +167,7 @@ func findLatestValidatorHeight(db db.DB) (uint64, error) {
 
 // findAnchorCheckpoint searches backwards from retainHeight to find a height that has complete validator set data
 // in validatorsKey there are two types of values: a validator set, and a value saying that the complete validator set for this height is unchanged, and points to some other key.
-func findAnchorCheckpoint(db db.DB, retainHeight uint64) (uint64, error) {
+func findAnchorCheckpoint(db db.DB, retainHeight uint64) *uint64 {
 	for h := retainHeight; h > 0; h-- {
 		key := fmt.Appendf(nil, "validatorsKey:%d", h)
 		value, err := db.Get(key)
@@ -181,10 +182,10 @@ func findAnchorCheckpoint(db db.DB, retainHeight uint64) (uint64, error) {
 
 		if valInfo.ValidatorSet != nil {
 			logger.Info("found anchor checkpoint", "height", h)
-			return h, nil
+			return &h
 		}
 	}
-	return 0, fmt.Errorf("could not find any anchor checkpoint at or before height %d", retainHeight)
+	return nil
 }
 func pruneBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64) error {
 	g, _ := errgroup.WithContext(context.Background())
