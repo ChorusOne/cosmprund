@@ -7,7 +7,8 @@ import (
 type BlockStatePruner func(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64) error
 
 // custom application.db pruner
-type AppPruner func(appStore db.DB, snapshotDB db.DB, dataDir string, dbfmt db.BackendType, pruneHeight, snapshotRestoreThreshold uint64) error
+type AppPruner func(appStore db.DB, snapshotDB db.DB, dataDir string,
+	dbfmt db.BackendType, pruneHeight, snapshotRestoreThreshold uint64) (snapshotted bool, err error)
 
 // ChainPruner holds the specific pruning functions for a chain.
 type ChainPruner struct {
