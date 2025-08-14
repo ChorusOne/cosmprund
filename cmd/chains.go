@@ -8,13 +8,13 @@ type BlockStatePruner func(blockStoreDB, stateStoreDB db.DB, pruneHeight uint64)
 
 // custom application.db pruner
 type AppPruner func(appStore db.DB, snapshotDB db.DB, dataDir string,
-	dbfmt db.BackendType, pruneHeight, snapshotRestoreThreshold uint64) (snapshotted bool, err error)
+	dbfmt db.BackendType, pruneHeight uint64, snapshotRestoreThreshold float64) (snapshotted bool, err error)
 
 // ChainPruner holds the specific pruning functions for a chain.
 type ChainPruner struct {
 	PruneBlockState          BlockStatePruner
 	PruneApp                 AppPruner
-	SnapshotRestoreThreshold uint64
+	SnapshotRestoreThreshold float64
 }
 
 // some chains, e.g Babylon, see very little benefit from using the snapshot restore method.
@@ -32,6 +32,7 @@ var chainConfigs = map[string]ChainPruner{
 	"dydx-testnet-4": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 1 * GiB},
 	"dydx-mainnet-1": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 1 * GiB},
 	"axelar-dojo-1":  {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
+	"tacchain_239-1": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 5 * GiB},
 }
 
 func GetPruner(chainID string) ChainPruner {

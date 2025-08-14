@@ -26,8 +26,29 @@ import (
 	"github.com/binaryholdings/cosmos-pruner/internal/rootmulti"
 )
 
-const GiB uint64 = 1073741824 // 2**30
-const appSizeThreshold uint64 = 10 * GiB
+const GiB float64 = 1073741824 // 2**30
+const appSizeThreshold float64 = 10 * GiB
+
+func formatSize(x float64) string {
+	const (
+		KiB = 1024
+		MiB = KiB * 1024
+		GiB = MiB * 1024
+		TiB = GiB * 1024
+	)
+	switch {
+	case x >= TiB:
+		return fmt.Sprintf("%.2f TiB", x/TiB)
+	case x >= GiB:
+		return fmt.Sprintf("%.2f GiB", x/GiB)
+	case x >= MiB:
+		return fmt.Sprintf("%.2f MiB", x/MiB)
+	case x >= KiB:
+		return fmt.Sprintf("%.2f KiB", x/KiB)
+	default:
+		return fmt.Sprintf("%.2f B", x)
+	}
+}
 
 var logger log.Logger
 
@@ -35,7 +56,7 @@ func setConfig(cfg *log.Config) {
 	cfg.Level = zerolog.InfoLevel
 }
 
-func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _, _ uint64) (bool, error) {
+func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _ uint64, _ float64) (bool, error) {
 	logger.Info("pruning application state")
 
 	appStore := rootmulti.NewStore(appDB, logger, metrics.NewNoOpMetrics())
@@ -95,7 +116,7 @@ func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _, _ uint64
 
 // this essentially "statesyncs" the application db
 func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string,
-	dbfmt db.BackendType, pruneHeight, snapshotRestoreThreshold uint64) (bool, error) {
+	dbfmt db.BackendType, pruneHeight uint64, snapshotRestoreThreshold float64) (bool, error) {
 	appPath := filepath.Join(dataDir, "application.db")
 	size, err := dirSize(appPath)
 	if err != nil {
@@ -104,7 +125,7 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string,
 	}
 
 	if size < snapshotRestoreThreshold {
-		logger.Warn("size of application database is too small for snapshot restore", "size", size/GiB, "threshold", snapshotRestoreThreshold/GiB)
+		logger.Warn("size of application database is too small for snapshot restore", "size", formatSize(size), "threshold", formatSize(snapshotRestoreThreshold))
 		return false, nil
 	}
 	logger.Info("pruning application state via snapshot", "pruneHeight", pruneHeight)
@@ -204,7 +225,7 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string,
 		logger.Error("cannot calculate snapshot size")
 	}
 
-	logger.Info("proceeding with snapshot restore", "size", snapSize/GiB)
+	logger.Info("proceeding with snapshot restore", "size", formatSize(snapSize))
 	if err := snapshotManager.RestoreLocalSnapshot(snapshot.Height, snapshot.Format); err != nil {
 		return false, fmt.Errorf("failed to restore local snapshot: %w", err)
 	}
@@ -213,7 +234,7 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string,
 	if err != nil {
 		logger.Error("cannot calculate new application db size")
 	}
-	logger.Info("snapshot sucessfully restored", "height", snapshot.Height, "appSize", newAppSize/GiB)
+	logger.Info("snapshot sucessfully restored", "height", snapshot.Height, "appSize", formatSize(newAppSize))
 	return true, nil
 }
 
@@ -458,13 +479,13 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 					return err
 				}
 				if (size < appSizeThreshold || forceCompressApp) && !snapshotted {
-					logger.Info("Starting application DB GC/compact", "sizeGB", size/GiB, "thresholdGB", appSizeThreshold/GiB, "forced", forceCompressApp)
+					logger.Info("Starting application DB GC/compact", "size", formatSize(size), "threshold", formatSize(appSizeThreshold), "forced", forceCompressApp)
 					if err := gcDB(dataDir, "application", dbToGCOnApp, dbfmt); err != nil {
 						logger.Error("Failed to run gcDB on application", "err", err)
 						return err
 					}
 				} else {
-					logger.Info("Skipping application DB compaction", "sizeGB", size/GiB, "thresholdGB", appSizeThreshold/GiB, "snapshotted", snapshotted)
+					logger.Info("Skipping application DB compaction", "size", formatSize(size), "threshold", formatSize(appSizeThreshold), "snapshotted", snapshotted)
 				}
 				return nil
 			})
@@ -481,8 +502,8 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 	return nil
 }
 
-func dirSize(path string) (uint64, error) {
-	var size uint64
+func dirSize(path string) (float64, error) {
+	var size float64
 	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
 			logger.Warn("cannot access file", "file", filePath, "err", err)
@@ -490,7 +511,7 @@ func dirSize(path string) (uint64, error) {
 		}
 
 		if !info.IsDir() {
-			size += uint64(info.Size())
+			size += float64(info.Size())
 		}
 		return nil
 	})

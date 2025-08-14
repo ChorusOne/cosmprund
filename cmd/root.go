@@ -65,7 +65,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(pruneCmd)
 
 	// --force-compress-app flag
-	pruneCmd.PersistentFlags().BoolVar(&forceCompressApp, "force-compress-app", false, fmt.Sprintf("compress application.db even if it's larger than reasonable (%d GB)\nThe entire database needs to be read, so it will be slow", appSizeThreshold/GiB))
+	pruneCmd.PersistentFlags().BoolVar(&forceCompressApp, "force-compress-app", false, fmt.Sprintf("compress application.db even if it's larger than reasonable (%f GB)\nThe entire database needs to be read, so it will be slow", appSizeThreshold/GiB))
 	if err := viper.BindPFlag("force-compress-app", pruneCmd.PersistentFlags().Lookup("force-compress-app")); err != nil {
 		panic(err)
 	}
