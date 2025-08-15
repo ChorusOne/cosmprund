@@ -10,7 +10,7 @@ import (
 
 // state store keys
 const (
-	prefixValidators             = int64(5)
+	// prefixValidators             = int64(5) // TODO: anchoring
 	prefixConsensusParams        = int64(6)
 	prefixState                  = int64(8)
 	prefixFinalizeBlockResponses = int64(14)
@@ -35,13 +35,6 @@ func pruneSeiBlockAndStateStore(blockStoreDB, stateStoreDB db.DB, pruneHeight ui
 		logger.Info("Pruned", "key", key, "count", prunedEC, "store", "block")
 	}
 
-	for _, key := range []int64{prefixConsensusParams, prefixFinalizeBlockResponses, prefixValidators} {
-		prunedS, err := deleteSeiRange(stateStoreDB, key, 0, int64(pruneHeight))
-		if err != nil {
-			return err
-		}
-		logger.Info("Pruned state", "count", prunedS, "key", key)
-	}
 	return nil
 }
 
