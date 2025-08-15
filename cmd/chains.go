@@ -22,7 +22,7 @@ type ApplicationPrunerParams struct {
 }
 
 func (a ApplicationPrunerParams) String() string {
-	return fmt.Sprintf("Application pruner params: data dir: %s, %s, %d, %f, %t",
+	return fmt.Sprintf("app pruner params [data dir: %s, db format: %s, prune height: %d, snapshot restore threshold: %f, iavl disable fast node: %t]",
 		a.dataDir, a.dbfmt, a.pruneHeight, a.snapshotRestoreThreshold, a.iavlDisableFastNode)
 }
 
@@ -51,6 +51,7 @@ var chainConfigs = map[string]ChainPruner{
 	"noble-1":        {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
 	"laozi-mainnet":  {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
 	"celestia":       {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
+	"heimdallv2-137": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 1 * GiB},
 }
 
 func GetPruner(chainID string) ChainPruner {
