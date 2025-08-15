@@ -17,12 +17,13 @@ var (
 )
 
 var (
-	cosmosSdk        bool
-	cometbft         bool
-	keepBlocks       uint64
-	runGC            bool
-	forceCompressApp bool
-	keepVersions     uint64
+	cosmosSdk           bool
+	iavlDisableFastNode bool
+	cometbft            bool
+	keepBlocks          uint64
+	runGC               bool
+	forceCompressApp    bool
+	keepVersions        uint64
 )
 
 func NewRootCmd() *cobra.Command {
@@ -53,7 +54,7 @@ func NewRootCmd() *cobra.Command {
 				}
 			}()
 
-			err = Prune(dataDir, cometbft, cosmosSdk)
+			err = Prune(dataDir, cometbft, cosmosSdk, iavlDisableFastNode)
 			if err != nil {
 				return err
 			}
@@ -95,6 +96,12 @@ func NewRootCmd() *cobra.Command {
 	// --cometbft flag
 	pruneCmd.PersistentFlags().BoolVar(&cometbft, "cometbft", true, "set to false you dont want to prune cometbft data")
 	if err := viper.BindPFlag("cometbft", pruneCmd.PersistentFlags().Lookup("cometbft")); err != nil {
+		panic(err)
+	}
+
+	// --iavl-disable-fastnode flag
+	pruneCmd.PersistentFlags().BoolVar(&iavlDisableFastNode, "iavl-disable-fastnode", true, "set accordingly with app.toml iavl-disable-fastnode setting")
+	if err := viper.BindPFlag("iavl-disable-fastnode", pruneCmd.PersistentFlags().Lookup("iavl-disable-fastnode")); err != nil {
 		panic(err)
 	}
 
