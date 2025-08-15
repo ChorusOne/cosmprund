@@ -100,7 +100,7 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	// --iavl-disable-fastnode flag
-	pruneCmd.PersistentFlags().BoolVar(&iavlDisableFastNode, "iavl-disable-fastnode", true, "set accordingly with app.toml iavl-disable-fastnode setting")
+	pruneCmd.PersistentFlags().BoolVar(&iavlDisableFastNode, "iavl-disable-fastnode", false, "set accordingly with app.toml iavl-disable-fastnode setting")
 	if err := viper.BindPFlag("iavl-disable-fastnode", pruneCmd.PersistentFlags().Lookup("iavl-disable-fastnode")); err != nil {
 		panic(err)
 	}
