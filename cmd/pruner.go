@@ -60,7 +60,7 @@ func PruneAppState(params *ApplicationPrunerParams) (bool, error) {
 	logger.Info("pruning application state (not using snapshot)", "params", params)
 
 	appStore := rootmulti.NewStore(params.appDB, logger, metrics.NewNoOpMetrics())
-	appStore.SetIAVLDisableFastNode(true)
+	appStore.SetIAVLDisableFastNode(params.iavlDisableFastNode)
 	ver := rootmulti.GetLatestVersion(params.appDB)
 
 	storeNames := []string{}
