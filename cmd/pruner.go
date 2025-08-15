@@ -56,12 +56,12 @@ func setConfig(cfg *log.Config) {
 	cfg.Level = zerolog.InfoLevel
 }
 
-func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _ uint64, _ float64) (bool, error) {
+func PruneAppState(params *ApplicationPrunerParams) (bool, error) {
 	logger.Info("pruning application state")
 
-	appStore := rootmulti.NewStore(appDB, logger, metrics.NewNoOpMetrics())
+	appStore := rootmulti.NewStore(params.appDB, logger, metrics.NewNoOpMetrics())
 	appStore.SetIAVLDisableFastNode(true)
-	ver := rootmulti.GetLatestVersion(appDB)
+	ver := rootmulti.GetLatestVersion(params.appDB)
 
 	storeNames := []string{}
 	if ver != 0 {
@@ -115,25 +115,24 @@ func PruneAppState(appDB db.DB, _ db.DB, _ string, _ db.BackendType, _ uint64, _
 }
 
 // this essentially "statesyncs" the application db
-func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string,
-	dbfmt db.BackendType, pruneHeight uint64, snapshotRestoreThreshold float64) (bool, error) {
-	appPath := filepath.Join(dataDir, "application.db")
+func SnapshotAndRestoreApp(params *ApplicationPrunerParams) (bool, error) {
+	appPath := filepath.Join(params.dataDir, "application.db")
 	size, err := dirSize(appPath)
 	if err != nil {
 		logger.Error("cannot calculate app path, bailing")
 		return false, err
 	}
 
-	if size < snapshotRestoreThreshold {
-		logger.Warn("size of application database is too small for snapshot restore", "size", formatSize(size), "threshold", formatSize(snapshotRestoreThreshold))
+	if size < params.snapshotRestoreThreshold {
+		logger.Warn("size of application database is too small for snapshot restore", "size", formatSize(size), "threshold", formatSize(params.snapshotRestoreThreshold))
 		return false, nil
 	}
-	logger.Info("pruning application state via snapshot", "pruneHeight", pruneHeight)
+	logger.Info("pruning application state via snapshot", "pruneHeight", params.pruneHeight)
 
-	appStore := rootmulti.NewStore(appDB, logger, metrics.NewNoOpMetrics())
-	appStore.SetIAVLDisableFastNode(true)
+	appStore := rootmulti.NewStore(params.appDB, logger, metrics.NewNoOpMetrics())
+	appStore.SetIAVLDisableFastNode(params.iavlDisableFastNode)
 
-	ver := rootmulti.GetLatestVersion(appDB)
+	ver := rootmulti.GetLatestVersion(params.appDB)
 	logger.Info("latest version", "latest", ver)
 
 	if ver == 0 {
@@ -180,7 +179,7 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string,
 		}
 	}()
 
-	snapshotStore, err := snapshots.NewStore(snapshotDB, tmpDir)
+	snapshotStore, err := snapshots.NewStore(params.snapshotDB, tmpDir)
 	if err != nil {
 		return false, fmt.Errorf("failed to create snapshot store: %w", err)
 	}
@@ -200,17 +199,17 @@ func SnapshotAndRestoreApp(appDB db.DB, snapshotDB db.DB, dataDir string,
 	}
 	logger.Info("snapshot created, removing old application.db")
 
-	_ = appDB.Close()
-	if err := os.RemoveAll(filepath.Join(dataDir, "application.db")); err != nil {
+	_ = params.appDB.Close()
+	if err := os.RemoveAll(filepath.Join(params.dataDir, "application.db")); err != nil {
 		return false, fmt.Errorf("failed to remove application.db: %w", err)
 	}
-	appDB, err = db.NewDB("application", dbfmt, dataDir)
+	params.appDB, err = db.NewDB("application", params.dbfmt, params.dataDir)
 	if err != nil {
 		return false, fmt.Errorf("failed to recreate application DB: %w", err)
 	}
 
-	freshStore := store.NewCommitMultiStore(appDB, logger, metrics.NewNoOpMetrics())
-	freshStore.SetIAVLDisableFastNode(true)
+	freshStore := store.NewCommitMultiStore(params.appDB, logger, metrics.NewNoOpMetrics())
+	freshStore.SetIAVLDisableFastNode(params.iavlDisableFastNode)
 	for _, key := range keys {
 		freshStore.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
 	}
@@ -354,7 +353,7 @@ func ChownR(path string, uid, gid int) error {
 }
 
 // Prune is the main entrypoint for the pruning process.
-func Prune(dataDir string, pruneComet, pruneApp bool) error {
+func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error {
 	logger.Info("Starting pruning process...")
 
 	curState, err := DbState(dataDir)
@@ -404,7 +403,15 @@ func Prune(dataDir string, pruneComet, pruneApp bool) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			snapshotted, err = pruner.PruneApp(appStoreDB, snapshotDB, dataDir, dbfmt, pruneHeight, pruner.SnapshotRestoreThreshold)
+			snapshotted, err = pruner.PruneApp(&ApplicationPrunerParams{
+				appDB:                    appStoreDB,
+				snapshotDB:               snapshotDB,
+				dataDir:                  dataDir,
+				dbfmt:                    dbfmt,
+				pruneHeight:              pruneHeight,
+				snapshotRestoreThreshold: pruner.SnapshotRestoreThreshold,
+				iavlDisableFastNode:      iavlDisableFastNode,
+			})
 			if err != nil {
 				errorChan <- fmt.Errorf("failed to prune application DB: %w", err)
 			}
