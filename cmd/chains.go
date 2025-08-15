@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	db "github.com/cosmos/cosmos-db"
 )
 
@@ -17,6 +19,11 @@ type ApplicationPrunerParams struct {
 	pruneHeight              uint64
 	snapshotRestoreThreshold float64
 	iavlDisableFastNode      bool
+}
+
+func (a ApplicationPrunerParams) String() string {
+	return fmt.Sprintf("Application pruner params: data dir: %s, %s, %d, %f, %t",
+		a.dataDir, a.dbfmt, a.pruneHeight, a.snapshotRestoreThreshold, a.iavlDisableFastNode)
 }
 
 // ChainPruner holds the specific pruning functions for a chain.

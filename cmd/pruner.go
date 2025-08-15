@@ -57,7 +57,7 @@ func setConfig(cfg *log.Config) {
 }
 
 func PruneAppState(params *ApplicationPrunerParams) (bool, error) {
-	logger.Info("pruning application state")
+	logger.Info("pruning application state (not using snapshot)", "params", params)
 
 	appStore := rootmulti.NewStore(params.appDB, logger, metrics.NewNoOpMetrics())
 	appStore.SetIAVLDisableFastNode(true)
@@ -127,7 +127,7 @@ func SnapshotAndRestoreApp(params *ApplicationPrunerParams) (bool, error) {
 		logger.Warn("size of application database is too small for snapshot restore", "size", formatSize(size), "threshold", formatSize(params.snapshotRestoreThreshold))
 		return false, nil
 	}
-	logger.Info("pruning application state via snapshot", "pruneHeight", params.pruneHeight)
+	logger.Info("pruning application state via snapshot", "params", params)
 
 	appStore := rootmulti.NewStore(params.appDB, logger, metrics.NewNoOpMetrics())
 	appStore.SetIAVLDisableFastNode(params.iavlDisableFastNode)
