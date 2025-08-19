@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -331,22 +332,26 @@ func ChownR(path string, uid, gid int) error {
 
 	var errs []error
 
-	// TODO: consider using walkdir here
-	err := filepath.Walk(path, func(name string, info os.FileInfo, err error) error {
-		// here, walk errored. return it immediately
+	err := filepath.WalkDir(path, func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			// special case to investigate leveldb manipulating files after close
+			if os.IsNotExist(err) {
+				logger.Warn("File disappeared during chown", "path", name, "err", err)
+			}
+
+			errs = append(errs, err)
+			return nil
 		}
 
-		// chown error: gather them and return in bulk
 		if chownErr := os.Chown(name, uid, gid); chownErr != nil {
 			errs = append(errs, chownErr)
 		}
+
 		return nil
 	})
 
 	if err != nil {
-		return err
+		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
