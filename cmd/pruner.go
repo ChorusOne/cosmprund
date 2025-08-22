@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"cosmossdk.io/log"
 	"cosmossdk.io/store"
@@ -329,6 +330,8 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 
 func ChownR(path string, uid, gid int) error {
 	logger.Info("Running chown", "path", path, "uid", uid, "gid", gid)
+	logger.Info("sleeping for 10 seconds to give leveldb time for cleanups")
+	time.Sleep(10 * time.Second)
 
 	var errs []error
 
