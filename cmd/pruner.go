@@ -29,7 +29,7 @@ import (
 )
 
 const GiB float64 = 1073741824 // 2**30
-const appSizeThreshold float64 = 10 * GiB
+const gcSizeThreshold float64 = 10 * GiB
 
 func formatSize(x float64) string {
 	const (
@@ -328,6 +328,38 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 	return nil
 }
 
+type gcRunOptions struct {
+	label       string
+	dbName      string
+	sizePath    string
+	dataDir     string
+	dbfmt       db.BackendType
+	db          db.DB
+	snapshotted bool
+}
+
+func maybeRunGC(opts gcRunOptions) error {
+	size, err := dirSize(opts.sizePath)
+	if err != nil {
+		logger.Error("Failed to get dir size, skipping GC", "path", opts.sizePath, "err", err)
+		return err
+	}
+
+	if (size >= gcSizeThreshold && !forceCompress) || opts.snapshotted {
+		logger.Info(fmt.Sprintf("Skipping %s DB compaction", opts.label), "size", formatSize(size), "threshold", formatSize(gcSizeThreshold), "snapshotted", opts.snapshotted)
+		return nil
+	}
+
+	logger.Info(fmt.Sprintf("Starting %s DB GC/compact", opts.label), "size", formatSize(size), "threshold", formatSize(gcSizeThreshold), "forced", forceCompress)
+
+	if err := gcDB(opts.dataDir, opts.dbName, opts.db, opts.dbfmt); err != nil {
+		logger.Error(fmt.Sprintf("Failed to run gcDB on %s", opts.label), "err", err)
+		return err
+	}
+
+	return nil
+}
+
 func ChownR(path string, uid, gid int) error {
 	logger.Info("Running chown", "path", path, "uid", uid, "gid", gid)
 	logger.Info("sleeping for 10 seconds to give leveldb time for cleanups")
@@ -465,21 +497,29 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 		if pruneComet && blockStoreDB != nil && stateStoreDB != nil {
 			dbToGCOnBlock := blockStoreDB
 			g.Go(func() error {
-				if err := gcDB(dataDir, "blockstore", dbToGCOnBlock, dbfmt); err != nil {
-					logger.Error("Failed to run gcDB on blockstore", "err", err)
-					return err
-				}
-				return nil
+				return maybeRunGC(gcRunOptions{
+					label:       "blockstore",
+					dbName:      "blockstore",
+					sizePath:    filepath.Join(dataDir, "blockstore.db"),
+					dataDir:     dataDir,
+					dbfmt:       dbfmt,
+					db:          dbToGCOnBlock,
+					snapshotted: snapshotted,
+				})
 			})
 			blockStoreDB = nil
 
 			dbToGCOnState := stateStoreDB
 			g.Go(func() error {
-				if err := gcDB(dataDir, "state", dbToGCOnState, dbfmt); err != nil {
-					logger.Error("Failed to run gcDB on state", "err", err)
-					return err
-				}
-				return nil
+				return maybeRunGC(gcRunOptions{
+					label:       "state",
+					dbName:      "state",
+					sizePath:    filepath.Join(dataDir, "state.db"),
+					dataDir:     dataDir,
+					dbfmt:       dbfmt,
+					db:          dbToGCOnState,
+					snapshotted: snapshotted,
+				})
 			})
 			stateStoreDB = nil
 		}
@@ -487,22 +527,15 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 		if pruneApp && appStoreDB != nil {
 			dbToGCOnApp := appStoreDB
 			g.Go(func() error {
-				appPath := filepath.Join(dataDir, "application.db")
-				size, err := dirSize(appPath)
-				if err != nil {
-					logger.Error("Failed to get dir size for app.db, skipping GC", "err", err)
-					return err
-				}
-				if (size < appSizeThreshold || forceCompressApp) && !snapshotted {
-					logger.Info("Starting application DB GC/compact", "size", formatSize(size), "threshold", formatSize(appSizeThreshold), "forced", forceCompressApp)
-					if err := gcDB(dataDir, "application", dbToGCOnApp, dbfmt); err != nil {
-						logger.Error("Failed to run gcDB on application", "err", err)
-						return err
-					}
-				} else {
-					logger.Info("Skipping application DB compaction", "size", formatSize(size), "threshold", formatSize(appSizeThreshold), "snapshotted", snapshotted)
-				}
-				return nil
+				return maybeRunGC(gcRunOptions{
+					label:       "application",
+					dbName:      "application",
+					sizePath:    filepath.Join(dataDir, "application.db"),
+					dataDir:     dataDir,
+					dbfmt:       dbfmt,
+					db:          dbToGCOnApp,
+					snapshotted: snapshotted,
+				})
 			})
 			appStoreDB = nil
 		}
