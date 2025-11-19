@@ -22,7 +22,7 @@ var (
 	cometbft            bool
 	keepBlocks          uint64
 	runGC               bool
-	forceCompressApp    bool
+	forceCompress       bool
 	keepVersions        uint64
 )
 
@@ -65,8 +65,8 @@ func NewRootCmd() *cobra.Command {
 
 	rootCmd.AddCommand(pruneCmd)
 
-	// --force-compress-app flag
-	pruneCmd.PersistentFlags().BoolVar(&forceCompressApp, "force-compress-app", false, fmt.Sprintf("compress application.db even if it's larger than reasonable (%f GB)\nThe entire database needs to be read, so it will be slow", appSizeThreshold/GiB))
+	// --force-compress flag
+	pruneCmd.PersistentFlags().BoolVar(&forceCompress, "force-compress-app", false, fmt.Sprintf("compress databases even if they are larger than reasonable (%f GB)\nThe entire database needs to be read, so it will be slow", gcSizeThreshold/GiB))
 	if err := viper.BindPFlag("force-compress-app", pruneCmd.PersistentFlags().Lookup("force-compress-app")); err != nil {
 		panic(err)
 	}
