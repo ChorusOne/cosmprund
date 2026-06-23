@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -58,6 +59,51 @@ func setConfig(cfg *log.Config) {
 	cfg.Level = zerolog.InfoLevel
 }
 
+// verifyAppState reopens the application DB after a prune/restore, reloads the kept
+// version, and checks that every mounted IAVL store's root hash still matches the
+// commit info captured before the operation (want). A mismatch means the operation
+// changed the app hash — e.g. a snapshot restore that rehashed the tree with a
+// different iavl version, or an in-place prune that deleted a live node — which would
+// make the node fail consensus and is unrecoverable in place. Returning an error here
+// stops the run before chown, so the operator can restore from backup / re-statesync.
+//
+// Per-store comparison is used (not the aggregate app hash) so that stores skipped for
+// empty hashes do not produce false mismatches; if every kept store's root is intact the
+// app hash is intact by construction.
+func verifyAppState(appDB db.DB, ver int64, want *storetypes.CommitInfo, keys map[string]*storetypes.KVStoreKey, iavlDisableFastNode bool) error {
+	vs := rootmulti.NewStore(appDB, logger, metrics.NewNoOpMetrics())
+	vs.SetIAVLDisableFastNode(iavlDisableFastNode)
+	for _, key := range keys {
+		vs.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
+	}
+	if err := vs.LoadVersion(ver); err != nil {
+		return fmt.Errorf("post-prune verify: failed to reload version %d: %w", ver, err)
+	}
+
+	wantByName := make(map[string][]byte, len(want.StoreInfos))
+	for _, si := range want.StoreInfos {
+		wantByName[si.Name] = si.CommitId.Hash
+	}
+
+	for name, key := range keys {
+		sub := vs.GetCommitKVStore(key)
+		if sub == nil {
+			return fmt.Errorf("post-prune verify: store %q missing after prune", name)
+		}
+		got := sub.LastCommitID().Hash
+		exp, ok := wantByName[name]
+		if !ok {
+			return fmt.Errorf("post-prune verify: store %q not present in pre-prune commit info", name)
+		}
+		if !bytes.Equal(got, exp) {
+			return fmt.Errorf("post-prune verify: store %q root hash changed (got %X want %X) — app hash broken, aborting", name, got, exp)
+		}
+	}
+
+	logger.Info("post-prune verify OK", "version", ver, "storesVerified", len(keys))
+	return nil
+}
+
 func PruneAppState(params *ApplicationPrunerParams) (bool, error) {
 	logger.Info("pruning application state (not using snapshot)", "params", params)
 
@@ -65,12 +111,14 @@ func PruneAppState(params *ApplicationPrunerParams) (bool, error) {
 	appStore.SetIAVLDisableFastNode(params.iavlDisableFastNode)
 	ver := rootmulti.GetLatestVersion(params.appDB)
 
+	var preCommitInfo *storetypes.CommitInfo
 	storeNames := []string{}
 	if ver != 0 {
 		cInfo, err := appStore.GetCommitInfo(ver)
 		if err != nil {
 			return false, err
 		}
+		preCommitInfo = cInfo
 
 		for _, storeInfo := range cInfo.StoreInfos {
 			// we only want to prune the stores with actual data.
@@ -110,6 +158,12 @@ func PruneAppState(params *ApplicationPrunerParams) (bool, error) {
 
 		if err := appStore.PruneStores(targetHeight); err != nil {
 			logger.Error("error pruning app state", "err", err)
+		}
+	}
+
+	if verifyAfterPrune && ver != 0 && preCommitInfo != nil {
+		if err := verifyAppState(params.appDB, ver, preCommitInfo, keys, params.iavlDisableFastNode); err != nil {
+			return false, err
 		}
 	}
 
@@ -199,8 +253,31 @@ func SnapshotAndRestoreApp(params *ApplicationPrunerParams) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to create snapshot: %w", err)
 	}
-	logger.Info("snapshot created, removing old application.db")
+	logger.Info("snapshot created", "height", targetVersion)
 
+	if snapSize, sErr := dirSize(tmpDir); sErr != nil {
+		logger.Error("cannot calculate snapshot size")
+	} else {
+		logger.Info("snapshot size", "size", formatSize(snapSize))
+	}
+
+	// Safe path (default): restore into a temp DB on the same filesystem, verify the
+	// restored app hash matches the original commit info, then atomically swap it in. If
+	// the restore is wrong (e.g. an incompatible hashing stack — the celestia failure
+	// mode), the original application.db is left untouched and we abort. Costs transient
+	// disk = original + restored at the same time.
+	if verifyAfterPrune {
+		restoredSize, err := restoreVerifiedAndSwap(params, snapshot, snapshotStore, opts, keys, ver, cInfo)
+		if err != nil {
+			return false, err
+		}
+		logger.Info("snapshot restored, verified, and swapped in", "height", snapshot.Height, "appSize", formatSize(restoredSize))
+		return true, nil
+	}
+
+	// Unsafe legacy path (--verify-after-prune=false): destroy the original first, then
+	// restore. Lower peak disk, but a failed restore leaves nothing to fall back to.
+	logger.Info("removing old application.db (verify-after-prune disabled)")
 	_ = params.appDB.Close()
 	if err := os.RemoveAll(filepath.Join(params.dataDir, "application.db")); err != nil {
 		return false, fmt.Errorf("failed to remove application.db: %w", err)
@@ -215,18 +292,12 @@ func SnapshotAndRestoreApp(params *ApplicationPrunerParams) (bool, error) {
 	for _, key := range keys {
 		freshStore.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
 	}
-
 	if err := freshStore.LoadLatestVersion(); err != nil {
 		return false, fmt.Errorf("failed to load fresh store: %w", err)
 	}
 	snapshotManager = snapshots.NewManager(snapshotStore, opts, freshStore, nil, logger)
 
-	snapSize, err := dirSize(tmpDir)
-	if err != nil {
-		logger.Error("cannot calculate snapshot size")
-	}
-
-	logger.Info("proceeding with snapshot restore", "size", formatSize(snapSize))
+	logger.Info("proceeding with in-place snapshot restore")
 	if err := snapshotManager.RestoreLocalSnapshot(snapshot.Height, snapshot.Format); err != nil {
 		return false, fmt.Errorf("failed to restore local snapshot: %w", err)
 	}
@@ -237,6 +308,96 @@ func SnapshotAndRestoreApp(params *ApplicationPrunerParams) (bool, error) {
 	}
 	logger.Info("snapshot sucessfully restored", "height", snapshot.Height, "appSize", formatSize(newAppSize))
 	return true, nil
+}
+
+// restoreVerifiedAndSwap restores the just-created snapshot into a temporary application
+// DB on the SAME filesystem as dataDir, verifies every store root matches the pre-snapshot
+// commit info, and only then removes the original and renames the verified DB into place.
+// On any failure before the swap, the original application.db is left intact. Returns the
+// size of the swapped-in DB.
+func restoreVerifiedAndSwap(
+	params *ApplicationPrunerParams,
+	snapshot *snapshottypes.Snapshot,
+	snapshotStore *snapshots.Store,
+	opts snapshottypes.SnapshotOptions,
+	keys map[string]*storetypes.KVStoreKey,
+	ver int64,
+	cInfo *storetypes.CommitInfo,
+) (float64, error) {
+	// Temp dir on the same filesystem as dataDir so the final rename is atomic.
+	restoreParent, err := os.MkdirTemp(params.dataDir, ".cosmprund-restore-*")
+	if err != nil {
+		return 0, fmt.Errorf("failed to create restore temp dir: %w", err)
+	}
+	cleanupTemp := true
+	defer func() {
+		if cleanupTemp {
+			if rmErr := os.RemoveAll(restoreParent); rmErr != nil {
+				logger.Error("error removing restore temp dir", "err", rmErr)
+			}
+		}
+	}()
+
+	restoreDB, err := db.NewDB("application", params.dbfmt, restoreParent)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create restore DB: %w", err)
+	}
+
+	restoreStore := store.NewCommitMultiStore(restoreDB, logger, metrics.NewNoOpMetrics())
+	restoreStore.SetIAVLDisableFastNode(params.iavlDisableFastNode)
+	for _, key := range keys {
+		restoreStore.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
+	}
+	if err := restoreStore.LoadLatestVersion(); err != nil {
+		_ = restoreDB.Close()
+		return 0, fmt.Errorf("failed to load restore store: %w", err)
+	}
+
+	mgr := snapshots.NewManager(snapshotStore, opts, restoreStore, nil, logger)
+	logger.Info("restoring snapshot into temp dir for verification", "dir", restoreParent)
+	if err := mgr.RestoreLocalSnapshot(snapshot.Height, snapshot.Format); err != nil {
+		_ = restoreDB.Close()
+		return 0, fmt.Errorf("failed to restore local snapshot: %w", err)
+	}
+
+	// Verify BEFORE touching the live DB.
+	if err := verifyAppState(restoreDB, ver, cInfo, keys, params.iavlDisableFastNode); err != nil {
+		_ = restoreDB.Close()
+		return 0, fmt.Errorf("restored snapshot failed verification, original application.db left intact: %w", err)
+	}
+	logger.Info("restored snapshot verified, swapping into place")
+
+	// Close both DBs before the filesystem swap.
+	if err := restoreDB.Close(); err != nil {
+		logger.Error("error closing restore DB before swap", "err", err)
+	}
+	_ = params.appDB.Close()
+
+	appPath := filepath.Join(params.dataDir, "application.db")
+	restoredPath := filepath.Join(restoreParent, "application.db")
+
+	// Commit to the swap: stop auto-deleting the restored data so a mid-swap failure
+	// preserves it for manual recovery.
+	cleanupTemp = false
+
+	if err := os.RemoveAll(appPath); err != nil {
+		return 0, fmt.Errorf("failed to remove old application.db during swap (verified DB preserved at %s): %w", restoredPath, err)
+	}
+	if err := os.Rename(restoredPath, appPath); err != nil {
+		return 0, fmt.Errorf("CRITICAL: old application.db removed but moving verified DB failed; recover it from %s: %w", restoredPath, err)
+	}
+	if err := os.RemoveAll(restoreParent); err != nil {
+		logger.Error("error removing now-empty restore temp dir", "err", err)
+	}
+
+	// Reopen so params.appDB is a valid handle on return (matches the legacy path).
+	params.appDB, err = db.NewDB("application", params.dbfmt, params.dataDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reopen application DB after swap: %w", err)
+	}
+
+	size, _ := dirSize(appPath)
+	return size, nil
 }
 
 // Implement a "GC" pass by copying only live data to a new DB

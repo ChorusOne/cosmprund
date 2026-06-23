@@ -1,4 +1,5 @@
 build/
+.omc/
 cosmos-pruner
 cosmprund
 /analyzer

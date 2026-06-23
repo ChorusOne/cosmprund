@@ -50,7 +50,14 @@ var chainConfigs = map[string]ChainPruner{
 	"neutron-1":      {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 30 * GiB},
 	"noble-1":        {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
 	"laozi-mainnet":  {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 25 * GiB},
-	"celestia":       {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 10 * GiB},
+	// celestia/mocha use a forked iavl (v1.2.8) + sdk/store stack. SnapshotAndRestoreApp
+	// rebuilds the IAVL tree via export/import using this tool's upstream iavl (v1.2.0),
+	// which rehashes inner nodes differently and breaks the app hash (consensus rejects the
+	// node, unrecoverable). PruneAppState deletes old versions in place and never rehashes
+	// the kept tree, so the on-disk commit info / app hash stays valid. See
+	// docs/celestia-pruner-recovery-plan.md.
+	"celestia":       {PruneBlockState: pruneBlockAndStateStore, PruneApp: PruneAppState},
+	"mocha-4":        {PruneBlockState: pruneBlockAndStateStore, PruneApp: PruneAppState},
 	"heimdallv2-137": {PruneBlockState: pruneBlockAndStateStore, PruneApp: SnapshotAndRestoreApp, SnapshotRestoreThreshold: 5 * GiB},
 }
 

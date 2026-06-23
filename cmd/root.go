@@ -24,6 +24,7 @@ var (
 	runGC               bool
 	forceCompress       bool
 	keepVersions        uint64
+	verifyAfterPrune    bool
 )
 
 func NewRootCmd() *cobra.Command {
@@ -84,6 +85,12 @@ func NewRootCmd() *cobra.Command {
 	// --keep-versions flag
 	pruneCmd.PersistentFlags().Uint64VarP(&keepVersions, "keep-versions", "v", 10, "set the amount of versions to keep in the application store")
 	if err := viper.BindPFlag("keep-versions", pruneCmd.PersistentFlags().Lookup("keep-versions")); err != nil {
+		panic(err)
+	}
+
+	// --verify-after-prune flag
+	pruneCmd.PersistentFlags().BoolVar(&verifyAfterPrune, "verify-after-prune", true, "after pruning the application store, reload the kept version and verify each store's root hash still matches the pre-prune commit info; abort on mismatch")
+	if err := viper.BindPFlag("verify-after-prune", pruneCmd.PersistentFlags().Lookup("verify-after-prune")); err != nil {
 		panic(err)
 	}
 
