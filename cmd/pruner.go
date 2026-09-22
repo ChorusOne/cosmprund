@@ -270,6 +270,7 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 
 	if err != nil {
 		logger.Error("Failed to open gc db", "err", err)
+		_ = dbToGC.Close()
 		return err
 	}
 
@@ -277,6 +278,8 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 	iter, err := dbToGC.Iterator(nil, nil)
 	if err != nil {
 		logger.Error("Failed to get original db iterator", "err", err)
+		_ = dbToGC.Close()
+		_ = newDB.Close()
 		return err
 	}
 	batchSize := 1_000
@@ -357,11 +360,13 @@ func maybeRunGC(opts gcRunOptions) error {
 	size, err := dirSize(opts.sizePath)
 	if err != nil {
 		logger.Error("Failed to get dir size, skipping GC", "path", opts.sizePath, "err", err)
+		_ = opts.db.Close()
 		return err
 	}
 
 	if (size >= gcSizeThreshold && !forceCompress) || opts.snapshotted {
 		logger.Info(fmt.Sprintf("Skipping %s DB compaction", opts.label), "size", formatSize(size), "threshold", formatSize(gcSizeThreshold), "snapshotted", opts.snapshotted)
+		_ = opts.db.Close()
 		return nil
 	}
 
