@@ -432,7 +432,7 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 		return err
 	}
 
-	var stateStoreDB, blockStoreDB, appStoreDB db.DB
+	var stateStoreDB, blockStoreDB, appStoreDB, snapshotDB db.DB
 
 	defer func() {
 		if stateStoreDB != nil {
@@ -443,6 +443,9 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 		}
 		if appStoreDB != nil {
 			_ = appStoreDB.Close()
+		}
+		if snapshotDB != nil {
+			_ = snapshotDB.Close()
 		}
 	}()
 
@@ -456,7 +459,7 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 		if err != nil {
 			return err
 		}
-		snapshotDB, err := db.NewDB("snapshots/metadata", dbfmt, dataDir)
+		snapshotDB, err = db.NewDB("snapshots/metadata", dbfmt, dataDir)
 		if err != nil {
 			return err
 		}
