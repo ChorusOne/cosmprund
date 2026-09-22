@@ -205,12 +205,18 @@ func SnapshotAndRestoreApp(params *ApplicationPrunerParams) (bool, error) {
 	if err := os.RemoveAll(filepath.Join(params.dataDir, "application.db")); err != nil {
 		return false, fmt.Errorf("failed to remove application.db: %w", err)
 	}
-	params.appDB, err = db.NewDB("application", params.dbfmt, params.dataDir)
+
+	newAppDB, err := db.NewDB("application", params.dbfmt, params.dataDir)
 	if err != nil {
 		return false, fmt.Errorf("failed to recreate application DB: %w", err)
 	}
+	defer func() {
+		if newAppDB != nil {
+			_ = newAppDB.Close()
+		}
+	}()
 
-	freshStore := store.NewCommitMultiStore(params.appDB, logger, metrics.NewNoOpMetrics())
+	freshStore := store.NewCommitMultiStore(newAppDB, logger, metrics.NewNoOpMetrics())
 	freshStore.SetIAVLDisableFastNode(params.iavlDisableFastNode)
 	for _, key := range keys {
 		freshStore.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
@@ -229,6 +235,15 @@ func SnapshotAndRestoreApp(params *ApplicationPrunerParams) (bool, error) {
 	logger.Info("proceeding with snapshot restore", "size", formatSize(snapSize))
 	if err := snapshotManager.RestoreLocalSnapshot(snapshot.Height, snapshot.Format); err != nil {
 		return false, fmt.Errorf("failed to restore local snapshot: %w", err)
+	}
+
+	// setting `newAppDB` to `nil` to signal the defer() closure that
+	// we explicitly close the DB here, and don't want it to attempt
+	// the closing again.
+	closingDB := newAppDB
+	newAppDB = nil
+	if err := closingDB.Close(); err != nil {
+		return false, fmt.Errorf("failed to close restored application DB: %w", err)
 	}
 
 	newAppSize, err := dirSize(appPath)
