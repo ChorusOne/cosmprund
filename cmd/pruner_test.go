@@ -63,3 +63,28 @@ func TestSnapshotAndRestoreAppClosesAllDBHandles(t *testing.T) {
 	require.NoError(t, err, "application.db is still locked: a DB handle leaked from SnapshotAndRestoreApp")
 	require.NoError(t, reopenedApp.Close())
 }
+
+// If maybeRunGC() doesn't run gcDB(), it should not leak the db handle.
+func TestMaybeRunGCClosesDBWhenSkipping(t *testing.T) {
+	logger = log.NewLogger(os.Stderr, setConfig)
+	dataDir := t.TempDir()
+
+	buildTestAppDB(t, dataDir)
+
+	appStoreDB, err := db.NewDB("application", db.GoLevelDBBackend, dataDir)
+	require.NoError(t, err)
+
+	require.NoError(t, maybeRunGC(gcRunOptions{
+		label:       "application",
+		dbName:      "application",
+		sizePath:    dataDir + "/application.db",
+		dataDir:     dataDir,
+		dbfmt:       db.GoLevelDBBackend,
+		db:          appStoreDB,
+		snapshotted: true, // to skip db compaction
+	}))
+
+	reopened, err := db.NewDB("application", db.GoLevelDBBackend, dataDir)
+	require.NoError(t, err, "application.db is still locked: maybeRunGC leaked the handle on the skip path")
+	require.NoError(t, reopened.Close())
+}
