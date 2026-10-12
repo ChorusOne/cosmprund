@@ -514,6 +514,11 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 		return errors.Join(errs...)
 	}
 
+	// HACK: to prevent double Close() in maybeRunGC() when `pruneApp` is true
+	if snapshotted {
+		appStoreDB = nil
+	}
+
 	if runGC {
 		g, _ := errgroup.WithContext(context.Background())
 
