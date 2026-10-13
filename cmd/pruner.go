@@ -205,12 +205,18 @@ func SnapshotAndRestoreApp(params *ApplicationPrunerParams) (bool, error) {
 	if err := os.RemoveAll(filepath.Join(params.dataDir, "application.db")); err != nil {
 		return false, fmt.Errorf("failed to remove application.db: %w", err)
 	}
-	params.appDB, err = db.NewDB("application", params.dbfmt, params.dataDir)
+
+	newAppDB, err := db.NewDB("application", params.dbfmt, params.dataDir)
 	if err != nil {
 		return false, fmt.Errorf("failed to recreate application DB: %w", err)
 	}
+	defer func() {
+		if newAppDB != nil {
+			_ = newAppDB.Close()
+		}
+	}()
 
-	freshStore := store.NewCommitMultiStore(params.appDB, logger, metrics.NewNoOpMetrics())
+	freshStore := store.NewCommitMultiStore(newAppDB, logger, metrics.NewNoOpMetrics())
 	freshStore.SetIAVLDisableFastNode(params.iavlDisableFastNode)
 	for _, key := range keys {
 		freshStore.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
@@ -229,6 +235,15 @@ func SnapshotAndRestoreApp(params *ApplicationPrunerParams) (bool, error) {
 	logger.Info("proceeding with snapshot restore", "size", formatSize(snapSize))
 	if err := snapshotManager.RestoreLocalSnapshot(snapshot.Height, snapshot.Format); err != nil {
 		return false, fmt.Errorf("failed to restore local snapshot: %w", err)
+	}
+
+	// setting `newAppDB` to `nil` to signal the defer() closure that
+	// we explicitly close the DB here, and don't want it to attempt
+	// the closing again.
+	closingDB := newAppDB
+	newAppDB = nil
+	if err := closingDB.Close(); err != nil {
+		return false, fmt.Errorf("failed to close restored application DB: %w", err)
 	}
 
 	newAppSize, err := dirSize(appPath)
@@ -255,6 +270,7 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 
 	if err != nil {
 		logger.Error("Failed to open gc db", "err", err)
+		_ = dbToGC.Close()
 		return err
 	}
 
@@ -262,6 +278,8 @@ func gcDB(dataDir string, dbName string, dbToGC db.DB, dbfmt db.BackendType) err
 	iter, err := dbToGC.Iterator(nil, nil)
 	if err != nil {
 		logger.Error("Failed to get original db iterator", "err", err)
+		_ = dbToGC.Close()
+		_ = newDB.Close()
 		return err
 	}
 	batchSize := 1_000
@@ -342,11 +360,13 @@ func maybeRunGC(opts gcRunOptions) error {
 	size, err := dirSize(opts.sizePath)
 	if err != nil {
 		logger.Error("Failed to get dir size, skipping GC", "path", opts.sizePath, "err", err)
+		_ = opts.db.Close()
 		return err
 	}
 
 	if (size >= gcSizeThreshold && !forceCompress) || opts.snapshotted {
 		logger.Info(fmt.Sprintf("Skipping %s DB compaction", opts.label), "size", formatSize(size), "threshold", formatSize(gcSizeThreshold), "snapshotted", opts.snapshotted)
+		_ = opts.db.Close()
 		return nil
 	}
 
@@ -412,7 +432,7 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 		return err
 	}
 
-	var stateStoreDB, blockStoreDB, appStoreDB db.DB
+	var stateStoreDB, blockStoreDB, appStoreDB, snapshotDB db.DB
 
 	defer func() {
 		if stateStoreDB != nil {
@@ -423,6 +443,9 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 		}
 		if appStoreDB != nil {
 			_ = appStoreDB.Close()
+		}
+		if snapshotDB != nil {
+			_ = snapshotDB.Close()
 		}
 	}()
 
@@ -436,7 +459,7 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 		if err != nil {
 			return err
 		}
-		snapshotDB, err := db.NewDB("snapshots/metadata", dbfmt, dataDir)
+		snapshotDB, err = db.NewDB("snapshots/metadata", dbfmt, dataDir)
 		if err != nil {
 			return err
 		}
@@ -489,6 +512,11 @@ func Prune(dataDir string, pruneComet, pruneApp, iavlDisableFastNode bool) error
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
+	}
+
+	// HACK: to prevent double Close() in maybeRunGC() when `pruneApp` is true
+	if snapshotted {
+		appStoreDB = nil
 	}
 
 	if runGC {
