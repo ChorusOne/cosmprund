@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"testing"
@@ -87,4 +88,50 @@ func TestMaybeRunGCClosesDBWhenSkipping(t *testing.T) {
 	reopened, err := db.NewDB("application", db.GoLevelDBBackend, dataDir)
 	require.NoError(t, err, "application.db is still locked: maybeRunGC leaked the handle on the skip path")
 	require.NoError(t, reopened.Close())
+}
+
+// 5001 leaves = 10001 nodes: one async import batch plus a 1-node final batch, the shape
+// where IAVL < v1.2.5 rebuilds the fast-node index before that batch is written.
+func TestSnapshotAndRestoreAppRebuildsFastNodes(t *testing.T) {
+	logger = log.NewNopLogger()
+	dataDir := t.TempDir()
+	const leaves = 5001
+
+	appDB, err := db.NewDB("application", db.GoLevelDBBackend, dataDir)
+	require.NoError(t, err)
+	cms := store.NewCommitMultiStore(appDB, logger, metrics.NewNoOpMetrics())
+	key := storetypes.NewKVStoreKey("test")
+	cms.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
+	require.NoError(t, cms.LoadLatestVersion())
+	kv := cms.GetCommitKVStore(key)
+	for i := 0; i < leaves; i++ {
+		k := make([]byte, 34)
+		binary.BigEndian.PutUint64(k[26:], uint64(i)*2654435761)
+		kv.Set(k, []byte{1})
+	}
+	cms.Commit()
+
+	snapshotDB, err := db.NewDB("snapshots/metadata", db.GoLevelDBBackend, dataDir)
+	require.NoError(t, err)
+	_, err = SnapshotAndRestoreApp(&ApplicationPrunerParams{
+		appDB:                    appDB,
+		snapshotDB:               snapshotDB,
+		dataDir:                  dataDir,
+		dbfmt:                    db.GoLevelDBBackend,
+		snapshotRestoreThreshold: 0,
+	})
+	require.NoError(t, err)
+	require.NoError(t, snapshotDB.Close())
+
+	restored, err := db.NewDB("application", db.GoLevelDBBackend, dataDir)
+	require.NoError(t, err)
+	defer restored.Close()
+	it, err := db.IteratePrefix(db.NewPrefixDB(restored, []byte("s/k:test/")), []byte("f"))
+	require.NoError(t, err)
+	defer it.Close()
+	fastNodes := 0
+	for ; it.Valid(); it.Next() {
+		fastNodes++
+	}
+	require.Equal(t, leaves, fastNodes, "restored store is missing fast nodes; latest-height reads would return nil")
 }
