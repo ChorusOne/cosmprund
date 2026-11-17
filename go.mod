@@ -10,7 +10,7 @@ require (
 	github.com/cometbft/cometbft/api v1.0.0
 	github.com/cosmos/cosmos-db v1.0.2
 	github.com/cosmos/gogoproto v1.7.0
-	github.com/cosmos/iavl v1.2.0
+	github.com/cosmos/iavl v1.2.8
 	github.com/gogo/protobuf v1.3.2
 	github.com/google/orderedcode v0.0.1
 	github.com/rs/zerolog v1.33.0
